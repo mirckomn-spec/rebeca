@@ -1,6 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { getDbSafe } from "@/lib/mongodb";
+import { getDbRequired } from "@/lib/mongodb";
 
 export type MemberControlDoc = {
   username: string;
@@ -12,25 +10,8 @@ export type MemberControlDoc = {
   updatedBy: string;
 };
 
-const FALLBACK_FILE = path.join(process.cwd(), "storage", "member-controls-fallback.json");
-
-async function readFallback() {
-  try {
-    const raw = await readFile(FALLBACK_FILE, "utf-8");
-    return JSON.parse(raw) as MemberControlDoc[];
-  } catch {
-    return [];
-  }
-}
-
-async function writeFallback(items: MemberControlDoc[]) {
-  await mkdir(path.dirname(FALLBACK_FILE), { recursive: true });
-  await writeFile(FALLBACK_FILE, JSON.stringify(items, null, 2), "utf-8");
-}
-
 export async function getAllMemberControls() {
-  const { db } = await getDbSafe();
-  if (!db) return readFallback();
+  const db = await getDbRequired();
   const rows = await db.collection("member_controls").find({}).toArray();
   return rows.map((row) => ({
     username: String(row.username ?? "").toLowerCase(),
@@ -51,34 +32,7 @@ export async function upsertMemberControl(
   updatedBy: string,
 ) {
   const normalized = username.toLowerCase().trim();
-  const { db } = await getDbSafe();
-  if (!db) {
-    const items = await readFallback();
-    const idx = items.findIndex((item) => item.username === normalized);
-    const prev: MemberControlDoc =
-      idx >= 0
-        ? items[idx]
-        : {
-            username: normalized,
-            balanceAdjustment: 0,
-            dailyProgressOverride: null,
-            streakOverride: null,
-            commissionPercentOverride: null,
-            updatedAt: new Date().toISOString(),
-            updatedBy,
-          };
-    const next: MemberControlDoc = {
-      ...prev,
-      ...patch,
-      username: normalized,
-      updatedAt: new Date().toISOString(),
-      updatedBy,
-    };
-    if (idx >= 0) items[idx] = next;
-    else items.push(next);
-    await writeFallback(items);
-    return next;
-  }
+  const db = await getDbRequired();
 
   await db.collection("member_controls").updateOne(
     { username: normalized },

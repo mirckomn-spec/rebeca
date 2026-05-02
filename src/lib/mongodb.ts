@@ -46,3 +46,21 @@ export async function getDbSafe() {
     return { db: null, error: message };
   }
 }
+
+/** Produção (ex.: Vercel) exige MongoDB; não há fallback em disco. */
+export class MongoUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MongoUnavailableError";
+  }
+}
+
+export async function getDbRequired() {
+  const { db, error } = await getDbSafe();
+  if (!db) {
+    throw new MongoUnavailableError(
+      error ?? "MongoDB indisponivel. Defina MONGODB_URI e verifique a rede.",
+    );
+  }
+  return db;
+}

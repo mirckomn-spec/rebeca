@@ -1,48 +1,36 @@
 import { NextResponse } from "next/server";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { getSessionFromCookie } from "@/lib/auth";
-import { getDbSafe } from "@/lib/mongodb";
+import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
 
 const DEFAULT_MIN_WITHDRAW = 200;
-const WITHDRAW_SETTINGS_FALLBACK_FILE = path.join(
-  process.cwd(),
-  "storage",
-  "withdrawal-settings-fallback.json",
-);
 
-async function readFallbackSettings() {
-  try {
-    const raw = await readFile(WITHDRAW_SETTINGS_FALLBACK_FILE, "utf-8");
-    return JSON.parse(raw) as { minWithdraw?: number };
-  } catch {
-    return {};
+function mongo503(e: unknown) {
+  if (e instanceof MongoUnavailableError) {
+    return NextResponse.json(
+      { error: "Banco de dados indisponivel.", details: e.message },
+      { status: 503 },
+    );
   }
-}
-
-async function writeFallbackSettings(data: { minWithdraw: number }) {
-  await mkdir(path.dirname(WITHDRAW_SETTINGS_FALLBACK_FILE), { recursive: true });
-  await writeFile(WITHDRAW_SETTINGS_FALLBACK_FILE, JSON.stringify(data, null, 2), "utf-8");
+  return null;
 }
 
 export async function GET() {
   const session = await getSessionFromCookie();
   if (!session) return NextResponse.json({ error: "Nao autorizado." }, { status: 401 });
 
-  const { db } = await getDbSafe();
-  if (!db) {
-    const fallback = await readFallbackSettings();
+  try {
+    const db = await getDbRequired();
+    const settings = await db
+      .collection("settings")
+      .findOne<{ minWithdraw?: unknown }>({ key: "withdrawals" });
     return NextResponse.json({
-      minWithdraw: Number(fallback.minWithdraw ?? DEFAULT_MIN_WITHDRAW),
+      minWithdraw: Number(settings?.minWithdraw ?? DEFAULT_MIN_WITHDRAW),
     });
+  } catch (e) {
+    const r = mongo503(e);
+    if (r) return r;
+    throw e;
   }
-
-  const settings = await db
-    .collection("settings")
-    .findOne<{ minWithdraw?: unknown }>({ key: "withdrawals" });
-  return NextResponse.json({
-    minWithdraw: Number(settings?.minWithdraw ?? DEFAULT_MIN_WITHDRAW),
-  });
 }
 
 export async function PATCH(request: Request) {
@@ -59,23 +47,25 @@ export async function PATCH(request: Request) {
   }
 
   const normalized = Number(minWithdraw.toFixed(2));
-  const { db } = await getDbSafe();
-  if (!db) {
-    await writeFallbackSettings({ minWithdraw: normalized });
-    return NextResponse.json({ ok: true, minWithdraw: normalized });
-  }
 
-  await db.collection("settings").updateOne(
-    { key: "withdrawals" },
-    {
-      $set: {
-        key: "withdrawals",
-        minWithdraw: normalized,
-        updatedAt: new Date(),
-        updatedBy: session.username,
+  try {
+    const db = await getDbRequired();
+    await db.collection("settings").updateOne(
+      { key: "withdrawals" },
+      {
+        $set: {
+          key: "withdrawals",
+          minWithdraw: normalized,
+          updatedAt: new Date(),
+          updatedBy: session.username,
+        },
       },
-    },
-    { upsert: true },
-  );
-  return NextResponse.json({ ok: true, minWithdraw: normalized });
+      { upsert: true },
+    );
+    return NextResponse.json({ ok: true, minWithdraw: normalized });
+  } catch (e) {
+    const r = mongo503(e);
+    if (r) return r;
+    throw e;
+  }
 }

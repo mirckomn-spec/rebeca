@@ -1,31 +1,16 @@
 import { NextResponse } from "next/server";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { getSessionFromCookie } from "@/lib/auth";
 import { uploadFileToDiscordChannel } from "@/lib/discord";
-import { getDbSafe } from "@/lib/mongodb";
+import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
 
-const AVATAR_FALLBACK_META = path.join(process.cwd(), "storage", "avatar-fallback.json");
-
-type AvatarMeta = Record<
-  string,
-  {
-    avatarUrl: string;
+function mongo503(e: unknown) {
+  if (e instanceof MongoUnavailableError) {
+    return NextResponse.json(
+      { error: "Banco de dados indisponivel.", details: e.message },
+      { status: 503 },
+    );
   }
->;
-
-async function readAvatarMeta() {
-  try {
-    const raw = await readFile(AVATAR_FALLBACK_META, "utf-8");
-    return JSON.parse(raw) as AvatarMeta;
-  } catch {
-    return {};
-  }
-}
-
-async function writeAvatarMeta(meta: AvatarMeta) {
-  await mkdir(path.dirname(AVATAR_FALLBACK_META), { recursive: true });
-  await writeFile(AVATAR_FALLBACK_META, JSON.stringify(meta, null, 2), "utf-8");
+  return null;
 }
 
 export async function GET() {
@@ -34,25 +19,21 @@ export async function GET() {
     return NextResponse.json({ error: "Nao autorizado." }, { status: 401 });
   }
 
-  const { db } = await getDbSafe();
-  if (!db) {
-    const meta = await readAvatarMeta();
-    const fallback = meta[session.username];
+  try {
+    const db = await getDbRequired();
+    const profile = await db.collection("profiles").findOne({
+      username: session.username,
+    });
+
     return NextResponse.json({
       username: session.username,
-      avatarName: fallback ? "stored" : null,
-      storage: "fallback",
+      avatarName: profile?.avatarUrl ? "stored" : null,
     });
+  } catch (e) {
+    const r = mongo503(e);
+    if (r) return r;
+    throw e;
   }
-
-  const profile = await db.collection("profiles").findOne({
-    username: session.username,
-  });
-
-  return NextResponse.json({
-    username: session.username,
-    avatarName: profile?.avatarUrl ? "stored" : null,
-  });
 }
 
 export async function POST(request: Request) {
@@ -104,29 +85,25 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: message }, { status: 502 });
   }
 
-  const { db } = await getDbSafe();
-  if (!db) {
-    const meta = await readAvatarMeta();
-    meta[session.username] = {
-      avatarUrl: discordAvatarUrl,
-    };
-    await writeAvatarMeta(meta);
-
-    return NextResponse.json({ ok: true, avatarName: "stored", storage: "fallback" });
-  }
-
-  await db.collection("profiles").updateOne(
-    { username: session.username },
-    {
-      $set: {
-        username: session.username,
-        avatarUrl: discordAvatarUrl,
-        avatarMimeType: file.type || "image/jpeg",
-        updatedAt: new Date(),
+  try {
+    const db = await getDbRequired();
+    await db.collection("profiles").updateOne(
+      { username: session.username },
+      {
+        $set: {
+          username: session.username,
+          avatarUrl: discordAvatarUrl,
+          avatarMimeType: file.type || "image/jpeg",
+          updatedAt: new Date(),
+        },
       },
-    },
-    { upsert: true },
-  );
+      { upsert: true },
+    );
 
-  return NextResponse.json({ ok: true, avatarName: "stored" });
+    return NextResponse.json({ ok: true, avatarName: "stored" });
+  } catch (e) {
+    const r = mongo503(e);
+    if (r) return r;
+    throw e;
+  }
 }

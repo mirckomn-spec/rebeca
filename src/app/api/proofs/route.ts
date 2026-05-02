@@ -1,24 +1,7 @@
 import { NextResponse } from "next/server";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
 import { getSessionFromCookie } from "@/lib/auth";
 import { uploadFileToDiscordChannel } from "@/lib/discord";
-import { getDbSafe } from "@/lib/mongodb";
-
-const PROOFS_FALLBACK_FILE = path.join(process.cwd(), "storage", "proofs-fallback.json");
-
-type FallbackProof = {
-  id: string;
-  sellerName: string;
-  productName: string;
-  uploader: string;
-  saleValue: number;
-  originalName: string;
-  mimeType: string;
-  discordFileUrl: string;
-  createdAt: string;
-};
+import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
 
 type FineDoc = {
   username?: string;
@@ -27,41 +10,19 @@ type FineDoc = {
   durationType?: string;
 };
 
-type FallbackFine = {
-  username: string;
-  penaltyPercent: number | null;
-  expiresAt: string | null;
-  durationType: string;
-};
-
-const FALLBACK_FINES_FILE = path.join(process.cwd(), "storage", "fallback-fines.json");
-
-async function readFallbackProofs() {
-  try {
-    const raw = await readFile(PROOFS_FALLBACK_FILE, "utf-8");
-    return JSON.parse(raw) as FallbackProof[];
-  } catch {
-    return [];
-  }
-}
-
-async function writeFallbackProofs(proofs: FallbackProof[]) {
-  await mkdir(path.dirname(PROOFS_FALLBACK_FILE), { recursive: true });
-  await writeFile(PROOFS_FALLBACK_FILE, JSON.stringify(proofs, null, 2), "utf-8");
-}
-
-async function readFallbackFines() {
-  try {
-    const raw = await readFile(FALLBACK_FINES_FILE, "utf-8");
-    return JSON.parse(raw) as FallbackFine[];
-  } catch {
-    return [];
-  }
-}
-
 function isFineActive(expiresAt: string | Date | null | undefined) {
   if (!expiresAt) return true;
   return new Date(expiresAt) > new Date();
+}
+
+function mongo503(e: unknown) {
+  if (e instanceof MongoUnavailableError) {
+    return NextResponse.json(
+      { error: "Banco de dados indisponivel.", details: e.message },
+      { status: 503 },
+    );
+  }
+  return null;
 }
 
 export async function GET() {
@@ -70,37 +31,35 @@ export async function GET() {
     return NextResponse.json({ error: "Nao autorizado." }, { status: 401 });
   }
 
-  const { db, error } = await getDbSafe();
-  if (!db) {
-    const proofs = await readFallbackProofs();
-    const filtered =
-      session.role === "admin"
-        ? proofs
-        : proofs.filter((proof) => proof.uploader.toLowerCase() === session.username);
-    return NextResponse.json(filtered);
+  try {
+    const db = await getDbRequired();
+    const filter = session.role === "admin" ? {} : { uploader: session.username };
+
+    const proofs = await db
+      .collection("proofs")
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    return NextResponse.json(
+      proofs.map((proof) => ({
+        id: String(proof._id),
+        sellerName: proof.sellerName,
+        productName: proof.productName,
+        uploader: proof.uploader,
+        saleValue: proof.saleValue ?? 0,
+        grossSaleValue: proof.grossSaleValue ?? proof.saleValue ?? 0,
+        penaltyPercentApplied: proof.penaltyPercentApplied ?? null,
+        originalName: proof.originalName,
+        mimeType: proof.mimeType,
+        createdAt: proof.createdAt,
+      })),
+    );
+  } catch (e) {
+    const r = mongo503(e);
+    if (r) return r;
+    throw e;
   }
-  const filter = session.role === "admin" ? {} : { uploader: session.username };
-
-  const proofs = await db
-    .collection("proofs")
-    .find(filter)
-    .sort({ createdAt: -1 })
-    .toArray();
-
-  return NextResponse.json(
-    proofs.map((proof) => ({
-      id: String(proof._id),
-      sellerName: proof.sellerName,
-      productName: proof.productName,
-      uploader: proof.uploader,
-      saleValue: proof.saleValue ?? 0,
-      grossSaleValue: proof.grossSaleValue ?? proof.saleValue ?? 0,
-      penaltyPercentApplied: proof.penaltyPercentApplied ?? null,
-      originalName: proof.originalName,
-      mimeType: proof.mimeType,
-      createdAt: proof.createdAt,
-    })),
-  );
 }
 
 export async function POST(request: Request) {
@@ -117,9 +76,7 @@ export async function POST(request: Request) {
   const file = formData.get("file");
 
   const sellerName =
-    session.role === "member"
-      ? session.username
-      : (sellerNameInput ?? "");
+    session.role === "member" ? session.username : (sellerNameInput ?? "");
   const uploaderUsername =
     session.role === "admin"
       ? String(uploaderInput ?? "").toLowerCase().trim()
@@ -153,8 +110,8 @@ export async function POST(request: Request) {
   }
 
   let totalPenaltyPercent = 0;
-  const { db: dbForPenalty } = await getDbSafe();
-  if (dbForPenalty) {
+  try {
+    const dbForPenalty = await getDbRequired();
     const fines = (await dbForPenalty
       .collection("fines")
       .find({ username: targetUsernameForPenalty })
@@ -163,14 +120,12 @@ export async function POST(request: Request) {
       if (!isFineActive(fine.expiresAt ?? null)) continue;
       totalPenaltyPercent += Number(fine.penaltyPercent ?? 0);
     }
-  } else {
-    const fallbackFines = await readFallbackFines();
-    for (const fine of fallbackFines) {
-      if (fine.username !== targetUsernameForPenalty) continue;
-      if (!isFineActive(fine.expiresAt)) continue;
-      totalPenaltyPercent += Number(fine.penaltyPercent ?? 0);
-    }
+  } catch (e) {
+    const r = mongo503(e);
+    if (r) return r;
+    throw e;
   }
+
   const normalizedPenaltyPercent = Math.min(100, Math.max(0, totalPenaltyPercent));
   const netSaleValue = Number((saleValue * (1 - normalizedPenaltyPercent / 100)).toFixed(2));
 
@@ -205,47 +160,30 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: message }, { status: 502 });
   }
 
-  const { db, error } = await getDbSafe();
-  if (!db) {
-    const fallbackProofs = await readFallbackProofs();
-    const fallbackId = randomUUID();
-    fallbackProofs.unshift({
-      id: fallbackId,
+  try {
+    const db = await getDbRequired();
+    const result = await db.collection("proofs").insertOne({
       sellerName,
       productName,
       saleValue: netSaleValue,
+      grossSaleValue: saleValue,
+      penaltyPercentApplied: normalizedPenaltyPercent,
       uploader: uploaderUsername,
       originalName: file.name,
       mimeType: file.type || "application/octet-stream",
       discordFileUrl,
-      createdAt: new Date().toISOString(),
+      createdAt: new Date(),
     });
-    await writeFallbackProofs(fallbackProofs);
+
     return NextResponse.json({
       ok: true,
-      id: fallbackId,
-      storage: "fallback",
-      warning: `Banco indisponivel: ${error}`,
+      id: String(result.insertedId),
       penaltyPercentApplied: normalizedPenaltyPercent,
+      netSaleValue,
     });
+  } catch (e) {
+    const r = mongo503(e);
+    if (r) return r;
+    throw e;
   }
-  const result = await db.collection("proofs").insertOne({
-    sellerName,
-    productName,
-    saleValue: netSaleValue,
-    grossSaleValue: saleValue,
-    penaltyPercentApplied: normalizedPenaltyPercent,
-    uploader: uploaderUsername,
-    originalName: file.name,
-    mimeType: file.type || "application/octet-stream",
-    discordFileUrl,
-    createdAt: new Date(),
-  });
-
-  return NextResponse.json({
-    ok: true,
-    id: String(result.insertedId),
-    penaltyPercentApplied: normalizedPenaltyPercent,
-    netSaleValue,
-  });
 }

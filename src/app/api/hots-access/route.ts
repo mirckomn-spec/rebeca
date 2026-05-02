@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { getSessionFromCookie } from "@/lib/auth";
-import { getDbSafe } from "@/lib/mongodb";
+import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
 
 type ProfileKey = "loira" | "morena";
 type SocialKey = "twitter" | "facebook" | "tiktok" | "instagram" | "discord";
@@ -32,14 +30,6 @@ type ProfileCredentials = {
   updatedBy: string;
 };
 
-type HotsFallbackState = {
-  access: AccessItem[];
-  credentialsByProfile: Partial<Record<ProfileKey, ProfileCredentials>>;
-};
-
-const FALLBACK_DIR = path.join(process.cwd(), "storage");
-const FALLBACK_FILE = path.join(FALLBACK_DIR, "hots-access.json");
-
 function normalizeProfileKey(value: unknown): ProfileKey {
   return String(value ?? "").toLowerCase() === "morena" ? "morena" : "loira";
 }
@@ -63,38 +53,15 @@ function normalizeAccessItem(raw: Partial<AccessItem>): AccessItem {
   };
 }
 
-async function readFallback() {
-  try {
-    const raw = await readFile(FALLBACK_FILE, "utf-8");
-    const parsed = JSON.parse(raw) as AccessItem[] | HotsFallbackState;
-    if (Array.isArray(parsed)) {
-      return {
-        access: parsed.map((item) => normalizeAccessItem(item)),
-        credentialsByProfile: {},
-      } as HotsFallbackState;
-    }
-    return {
-      access: Array.isArray(parsed.access) ? parsed.access.map((item) => normalizeAccessItem(item)) : [],
-      credentialsByProfile: parsed.credentialsByProfile ?? {},
-    } as HotsFallbackState;
-  } catch {
-    return { access: [], credentialsByProfile: {} } as HotsFallbackState;
-  }
-}
-
-async function writeFallback(state: HotsFallbackState) {
-  await mkdir(FALLBACK_DIR, { recursive: true });
-  await writeFile(FALLBACK_FILE, JSON.stringify(state, null, 2), "utf-8");
-}
-
 function upsertAccess(items: AccessItem[], next: AccessItem) {
   const filtered = items.filter(
     (item) =>
       !(
         item.username === next.username &&
         item.profileKey === next.profileKey &&
-        (item.scope === next.scope) &&
-        ((item.scope === "social" ? item.socialKey : "") === (next.scope === "social" ? next.socialKey : ""))
+        item.scope === next.scope &&
+        (item.scope === "social" ? item.socialKey : "") ===
+          (next.scope === "social" ? next.socialKey : "")
       ),
   );
   filtered.push(next);
@@ -119,23 +86,29 @@ function removeAccess(
   );
 }
 
+function mongo503(e: unknown) {
+  if (e instanceof MongoUnavailableError) {
+    return NextResponse.json(
+      { error: "Banco de dados indisponivel.", details: e.message },
+      { status: 503 },
+    );
+  }
+  return null;
+}
+
 export async function GET(request: Request) {
   const session = await getSessionFromCookie();
   if (!session) {
     return NextResponse.json({ error: "Nao autorizado." }, { status: 401 });
   }
 
-  const { searchParams } = new URL(request.url);
-  const wantsAll = searchParams.get("all") === "1";
+  try {
+    const db = await getDbRequired();
+    const { searchParams } = new URL(request.url);
+    const wantsAll = searchParams.get("all") === "1";
 
-  const fallback = await readFallback();
-  const { db } = await getDbSafe();
-
-  let dbItems: AccessItem[] = [];
-  let dbCredentialsByProfile: Partial<Record<ProfileKey, ProfileCredentials>> = {};
-  if (db) {
     const raw = await db.collection("hots_access").find({}).toArray();
-    dbItems = raw.map((item) =>
+    const dbItems = raw.map((item) =>
       normalizeAccessItem({
         username: String(item.username ?? "").toLowerCase(),
         profileKey: normalizeProfileKey(item.profileKey),
@@ -145,58 +118,47 @@ export async function GET(request: Request) {
         updatedBy: String(item.updatedBy ?? "bel"),
       }),
     );
+    const merged = [...dbItems].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
     const profileSettings = await db.collection("settings").findOne<{
       key?: string;
       credentialsByProfile?: Partial<Record<ProfileKey, ProfileCredentials>>;
     }>({ key: "hots_profiles" });
-    dbCredentialsByProfile = profileSettings?.credentialsByProfile ?? {};
-  }
+    const credentialsByProfile = profileSettings?.credentialsByProfile ?? {};
 
-  const mergedMap = new Map<string, AccessItem>();
-  for (const item of fallback.access) {
-    const key = `${item.username}:${item.profileKey}:${item.scope}:${item.socialKey ?? ""}`;
-    mergedMap.set(key, item);
-  }
-  for (const item of dbItems) {
-    const key = `${item.username}:${item.profileKey}:${item.scope}:${item.socialKey ?? ""}`;
-    mergedMap.set(key, item);
-  }
-  const merged = Array.from(mergedMap.values()).sort((a, b) =>
-    b.updatedAt.localeCompare(a.updatedAt),
-  );
-  const credentialsByProfile: Partial<Record<ProfileKey, ProfileCredentials>> = {
-    ...fallback.credentialsByProfile,
-    ...dbCredentialsByProfile,
-  };
+    if (session.role === "admin" && wantsAll) {
+      return NextResponse.json({
+        access: merged,
+        profilesByKey: credentialsByProfile,
+      });
+    }
 
-  if (session.role === "admin" && wantsAll) {
-    return NextResponse.json({
-      access: merged,
-      profilesByKey: credentialsByProfile,
-    });
+    const myAccessList = merged.filter((item) => item.username === session.username.toLowerCase());
+    const profileAccessList = myAccessList.filter((item) => item.scope === "profile");
+    const socialAccessList = myAccessList.filter((item) => item.scope === "social");
+    return NextResponse.json(
+      profileAccessList.map((item) => {
+        const profileData = credentialsByProfile[item.profileKey] ?? null;
+        const grantedSocials = socialAccessList
+          .filter((socialItem) => socialItem.profileKey === item.profileKey)
+          .map((socialItem) => socialItem.socialKey)
+          .filter((social): social is SocialKey => Boolean(social));
+        return {
+          ...item,
+          credentials: profileData
+            ? { login: profileData.login, password: profileData.password }
+            : null,
+          profileImageUrl: profileData?.imageUrl ?? null,
+          grantedSocials,
+          socialCredentialsByKey: profileData?.socialCredentialsByKey ?? {},
+        };
+      }),
+    );
+  } catch (e) {
+    const r = mongo503(e);
+    if (r) return r;
+    throw e;
   }
-
-  const myAccessList = merged.filter((item) => item.username === session.username.toLowerCase());
-  const profileAccessList = myAccessList.filter((item) => item.scope === "profile");
-  const socialAccessList = myAccessList.filter((item) => item.scope === "social");
-  return NextResponse.json(
-    profileAccessList.map((item) => {
-      const profileData = credentialsByProfile[item.profileKey] ?? null;
-      const grantedSocials = socialAccessList
-        .filter((socialItem) => socialItem.profileKey === item.profileKey)
-        .map((socialItem) => socialItem.socialKey)
-        .filter((social): social is SocialKey => Boolean(social));
-      return {
-        ...item,
-        credentials: profileData
-          ? { login: profileData.login, password: profileData.password }
-          : null,
-        profileImageUrl: profileData?.imageUrl ?? null,
-        grantedSocials,
-        socialCredentialsByKey: profileData?.socialCredentialsByKey ?? {},
-      };
-    }),
-  );
 }
 
 export async function POST(request: Request) {
@@ -221,57 +183,52 @@ export async function POST(request: Request) {
     | null;
   const action = body?.action ?? "release";
   const normalizedProfile = normalizeProfileKey(body?.profileKey);
-  const fallback = await readFallback();
 
-  if (action === "save-credentials") {
-    const login = String(body?.login ?? "").trim();
-    const password = String(body?.password ?? "").trim();
-    const imageUrl = String(body?.imageUrl ?? "").trim();
-    if (!login || !password) {
-      return NextResponse.json(
-        { error: "Informe login e senha para salvar as credenciais." },
-        { status: 400 },
-      );
-    }
+  try {
+    const db = await getDbRequired();
 
-    const credential: ProfileCredentials = {
-      profileKey: normalizedProfile,
-      login,
-      password,
-      imageUrl,
-      socialCredentialsByKey: {
-        ...(fallback.credentialsByProfile[normalizedProfile]?.socialCredentialsByKey ?? {}),
-      },
-      updatedAt: new Date().toISOString(),
-      updatedBy: session.username,
-    };
-    const socialKey = body?.socialKey ? normalizeSocialKey(body.socialKey) : null;
-    const socialLogin = String(body?.socialLogin ?? "").trim();
-    const socialPassword = String(body?.socialPassword ?? "").trim();
-    const socialUrl = String(body?.socialUrl ?? "").trim();
-    if (socialKey && socialLogin && socialPassword) {
-      credential.socialCredentialsByKey = {
-        ...(credential.socialCredentialsByKey ?? {}),
-        [socialKey]: {
-          login: socialLogin,
-          password: socialPassword,
-          url: socialUrl || undefined,
-        },
-      };
-    }
-    await writeFallback({
-      ...fallback,
-      credentialsByProfile: {
-        ...fallback.credentialsByProfile,
-        [normalizedProfile]: credential,
-      },
-    });
+    if (action === "save-credentials") {
+      const login = String(body?.login ?? "").trim();
+      const password = String(body?.password ?? "").trim();
+      const imageUrl = String(body?.imageUrl ?? "").trim();
+      if (!login || !password) {
+        return NextResponse.json(
+          { error: "Informe login e senha para salvar as credenciais." },
+          { status: 400 },
+        );
+      }
 
-    const { db } = await getDbSafe();
-    if (db) {
       const profileSettings = await db.collection("settings").findOne<{
         credentialsByProfile?: Partial<Record<ProfileKey, ProfileCredentials>>;
       }>({ key: "hots_profiles" });
+      const prevCred = profileSettings?.credentialsByProfile?.[normalizedProfile];
+
+      const credential: ProfileCredentials = {
+        profileKey: normalizedProfile,
+        login,
+        password,
+        imageUrl,
+        socialCredentialsByKey: {
+          ...(prevCred?.socialCredentialsByKey ?? {}),
+        },
+        updatedAt: new Date().toISOString(),
+        updatedBy: session.username,
+      };
+      const socialKey = body?.socialKey ? normalizeSocialKey(body.socialKey) : null;
+      const socialLogin = String(body?.socialLogin ?? "").trim();
+      const socialPassword = String(body?.socialPassword ?? "").trim();
+      const socialUrl = String(body?.socialUrl ?? "").trim();
+      if (socialKey && socialLogin && socialPassword) {
+        credential.socialCredentialsByKey = {
+          ...(credential.socialCredentialsByKey ?? {}),
+          [socialKey]: {
+            login: socialLogin,
+            password: socialPassword,
+            url: socialUrl || undefined,
+          },
+        };
+      }
+
       const mergedCredentials = {
         ...(profileSettings?.credentialsByProfile ?? {}),
         [normalizedProfile]: credential,
@@ -288,50 +245,58 @@ export async function POST(request: Request) {
         },
         { upsert: true },
       );
+      return NextResponse.json({ ok: true });
     }
-    return NextResponse.json({ ok: true });
-  }
 
-  const normalizedUsername = String(body?.username ?? "").toLowerCase().trim();
-  const normalizedSocial = body?.socialKey ? normalizeSocialKey(body.socialKey) : undefined;
+    const normalizedUsername = String(body?.username ?? "").toLowerCase().trim();
+    const normalizedSocial = body?.socialKey ? normalizeSocialKey(body.socialKey) : undefined;
 
-  if (!normalizedUsername || normalizedUsername === "bel") {
-    return NextResponse.json({ error: "Usuario invalido." }, { status: 400 });
-  }
+    if (!normalizedUsername || normalizedUsername === "bel") {
+      return NextResponse.json({ error: "Usuario invalido." }, { status: 400 });
+    }
 
-  const item: AccessItem = {
-    username: normalizedUsername,
-    profileKey: normalizedProfile,
-    scope: action === "release-social" ? "social" : "profile",
-    socialKey: action === "release-social" ? normalizedSocial : undefined,
-    updatedAt: new Date().toISOString(),
-    updatedBy: session.username,
-  };
+    const item: AccessItem = {
+      username: normalizedUsername,
+      profileKey: normalizedProfile,
+      scope: action === "release-social" ? "social" : "profile",
+      socialKey: action === "release-social" ? normalizedSocial : undefined,
+      updatedAt: new Date().toISOString(),
+      updatedBy: session.username,
+    };
 
-  await writeFallback({
-    ...fallback,
-    access: upsertAccess(fallback.access, item),
-  });
-
-  const { db } = await getDbSafe();
-  if (db) {
-    await db.collection("hots_access").updateOne(
-      { username: normalizedUsername, profileKey: normalizedProfile },
-      {
-        $set: {
-          username: normalizedUsername,
-          profileKey: normalizedProfile,
-          scope: item.scope,
-          socialKey: item.scope === "social" ? item.socialKey : undefined,
-          updatedAt: new Date(item.updatedAt),
-          updatedBy: session.username,
-        },
-      },
-      { upsert: true },
+    const raw = await db.collection("hots_access").find({}).toArray();
+    const accessList = raw.map((row) =>
+      normalizeAccessItem({
+        username: row.username,
+        profileKey: row.profileKey,
+        scope: row.scope,
+        socialKey: row.socialKey,
+        updatedAt: new Date(row.updatedAt ?? new Date()).toISOString(),
+        updatedBy: row.updatedBy,
+      }),
     );
-  }
+    const nextAccess = upsertAccess(accessList, item);
 
-  return NextResponse.json({ ok: true });
+    await db.collection("hots_access").deleteMany({});
+    if (nextAccess.length > 0) {
+      await db.collection("hots_access").insertMany(
+        nextAccess.map((a) => ({
+          username: a.username,
+          profileKey: a.profileKey,
+          scope: a.scope,
+          socialKey: a.scope === "social" ? a.socialKey : undefined,
+          updatedAt: new Date(a.updatedAt),
+          updatedBy: a.updatedBy,
+        })),
+      );
+    }
+
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    const r = mongo503(e);
+    if (r) return r;
+    throw e;
+  }
 }
 
 export async function DELETE(request: Request) {
@@ -356,26 +321,45 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ error: "Usuario invalido." }, { status: 400 });
   }
 
-  const fallback = await readFallback();
-  await writeFallback({
-    ...fallback,
-    access: removeAccess(
-      fallback.access,
+  try {
+    const db = await getDbRequired();
+    const raw = await db.collection("hots_access").find({}).toArray();
+    const accessList = raw.map((row) =>
+      normalizeAccessItem({
+        username: row.username,
+        profileKey: row.profileKey,
+        scope: row.scope,
+        socialKey: row.socialKey,
+        updatedAt: new Date(row.updatedAt ?? new Date()).toISOString(),
+        updatedBy: row.updatedBy,
+      }),
+    );
+    const nextAccess = removeAccess(
+      accessList,
       normalizedUsername,
       normalizedProfile,
       normalizedScope,
       normalizedSocial,
-    ),
-  });
+    );
 
-  const { db } = await getDbSafe();
-  if (db) {
-    await db.collection("hots_access").deleteOne({
-      username: normalizedUsername,
-      profileKey: normalizedProfile,
-      scope: normalizedScope,
-      socialKey: normalizedScope === "social" ? normalizedSocial : undefined,
-    });
+    await db.collection("hots_access").deleteMany({});
+    if (nextAccess.length > 0) {
+      await db.collection("hots_access").insertMany(
+        nextAccess.map((a) => ({
+          username: a.username,
+          profileKey: a.profileKey,
+          scope: a.scope,
+          socialKey: a.scope === "social" ? a.socialKey : undefined,
+          updatedAt: new Date(a.updatedAt),
+          updatedBy: a.updatedBy,
+        })),
+      );
+    }
+
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    const r = mongo503(e);
+    if (r) return r;
+    throw e;
   }
-  return NextResponse.json({ ok: true });
 }

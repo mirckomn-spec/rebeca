@@ -1,8 +1,6 @@
 import bcrypt from "bcryptjs";
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { getDbSafe } from "@/lib/mongodb";
+import { getDbRequired, getDbSafe } from "@/lib/mongodb";
 import { ALLOWED_USERS } from "@/lib/users";
 
 export type SiteUserDoc = {
@@ -16,28 +14,12 @@ export type SiteUserDoc = {
 };
 
 const COLLECTION = "site_users";
-const FALLBACK_FILE = path.join(process.cwd(), "storage", "site-users-fallback.json");
-
-async function readFallbackUsers() {
-  try {
-    const raw = await readFile(FALLBACK_FILE, "utf-8");
-    return JSON.parse(raw) as SiteUserDoc[];
-  } catch {
-    return [];
-  }
-}
-
-async function writeFallbackUsers(users: SiteUserDoc[]) {
-  await mkdir(path.dirname(FALLBACK_FILE), { recursive: true });
-  await writeFile(FALLBACK_FILE, JSON.stringify(users, null, 2), "utf-8");
-}
 
 export async function findSiteUser(username: string) {
   const { db } = await getDbSafe();
   const normalized = username.toLowerCase();
   if (!db) {
-    const users = await readFallbackUsers();
-    return users.find((user) => user.username === normalized) ?? null;
+    return null;
   }
   return db.collection(COLLECTION).findOne<SiteUserDoc>({ username: normalized });
 }
@@ -55,14 +37,12 @@ export async function verifyPassword(plain: string, hash: string) {
 }
 
 export async function listSiteUsersForAdmin() {
-  const { db } = await getDbSafe();
-  const rows = db
-    ? await db
-        .collection(COLLECTION)
-        .find({})
-        .sort({ username: 1 })
-        .toArray()
-    : await readFallbackUsers();
+  const db = await getDbRequired();
+  const rows = await db
+    .collection(COLLECTION)
+    .find({})
+    .sort({ username: 1 })
+    .toArray();
   return rows.map((row) => ({
     username: String(row.username ?? ""),
     blocked: Boolean(row.blocked),
@@ -73,31 +53,12 @@ export async function listSiteUsersForAdmin() {
 }
 
 export async function createSiteUser(username: string, plainPassword: string) {
-  const { db } = await getDbSafe();
+  const db = await getDbRequired();
   const normalized = username.toLowerCase().trim();
   if (!normalized || normalized === "bel") {
     throw new Error("Usuario invalido.");
   }
   const passwordHash = await hashPassword(plainPassword);
-  if (!db) {
-    const users = await readFallbackUsers();
-    const existing = users.find((user) => user.username === normalized);
-    if (existing && !existing.deleted) {
-      throw new Error("Usuario ja existe.");
-    }
-    const nextUsers = users.filter((user) => user.username !== normalized);
-    nextUsers.push({
-      username: normalized,
-      passwordHash,
-      role: "member",
-      blocked: false,
-      blockedReason: null,
-      deleted: false,
-      createdAt: existing?.createdAt ?? new Date(),
-    });
-    await writeFallbackUsers(nextUsers);
-    return;
-  }
   const existing = await db.collection(COLLECTION).findOne({ username: normalized });
   if (existing && !existing.deleted) {
     throw new Error("Usuario ja existe.");
@@ -124,36 +85,9 @@ export async function setUserBlocked(
   blocked: boolean,
   blockedReason: string | null,
 ) {
-  const { db } = await getDbSafe();
+  const db = await getDbRequired();
   const normalized = username.toLowerCase().trim();
   if (normalized === "bel") throw new Error("Nao e possivel bloquear a conta da Bel.");
-  if (!db) {
-    const users = await readFallbackUsers();
-    const idx = users.findIndex((user) => user.username === normalized);
-    if (idx < 0) {
-      const legacyPlain = ALLOWED_USERS[normalized];
-      const passwordHash = legacyPlain
-        ? await hashPassword(legacyPlain)
-        : await hashPassword(generateRandomPassword());
-      users.push({
-        username: normalized,
-        passwordHash,
-        role: "member",
-        blocked,
-        blockedReason: blocked ? (blockedReason?.trim() || "Sem motivo informado.") : null,
-        deleted: false,
-        createdAt: new Date(),
-      });
-    } else {
-      users[idx] = {
-        ...users[idx],
-        blocked,
-        blockedReason: blocked ? (blockedReason?.trim() || "Sem motivo informado.") : null,
-      };
-    }
-    await writeFallbackUsers(users);
-    return;
-  }
   const existing = await db.collection(COLLECTION).findOne({ username: normalized });
   if (!existing) {
     const legacyPlain = ALLOWED_USERS[normalized];
@@ -183,45 +117,9 @@ export async function setUserBlocked(
 }
 
 export async function setUserDeleted(username: string, hard: boolean) {
-  const { db } = await getDbSafe();
+  const db = await getDbRequired();
   const normalized = username.toLowerCase().trim();
   if (normalized === "bel") throw new Error("Nao e possivel remover a conta da Bel.");
-  if (!db) {
-    const users = await readFallbackUsers();
-    const idx = users.findIndex((user) => user.username === normalized);
-    if (hard) {
-      if (idx >= 0) {
-        users.splice(idx, 1);
-        await writeFallbackUsers(users);
-      }
-      return;
-    }
-    if (idx < 0) {
-      const legacyPlain = ALLOWED_USERS[normalized];
-      const passwordHash = legacyPlain
-        ? await hashPassword(legacyPlain)
-        : await hashPassword(generateRandomPassword());
-      users.push({
-        username: normalized,
-        passwordHash,
-        role: "member",
-        blocked: true,
-        blockedReason: "Conta encerrada.",
-        deleted: true,
-        createdAt: new Date(),
-      });
-      await writeFallbackUsers(users);
-      return;
-    }
-    users[idx] = {
-      ...users[idx],
-      deleted: true,
-      blocked: true,
-      blockedReason: "Conta encerrada.",
-    };
-    await writeFallbackUsers(users);
-    return;
-  }
   if (hard) {
     await db.collection(COLLECTION).deleteOne({ username: normalized });
     return;

@@ -1,21 +1,38 @@
 import { redirect } from "next/navigation";
 import MembrosPainelClient from "@/components/membros-painel-client";
 import { getSessionFromCookie } from "@/lib/auth";
-import { getDbSafe } from "@/lib/mongodb";
+import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
 
 export default async function PainelPage() {
   const session = await getSessionFromCookie();
   if (!session) redirect("/");
   if (session.role !== "member") redirect("/dashboard");
 
-  const { db } = await getDbSafe();
-  const proofs = db
-    ? await db
-        .collection("proofs")
-        .find({ uploader: session.username })
-        .sort({ createdAt: -1 })
-        .toArray()
-    : [];
+  type ProofRow = {
+    _id: { toString(): string };
+    sellerName?: string;
+    productName?: string;
+    uploader?: string;
+    saleValue?: number;
+    originalName?: string;
+    mimeType?: string;
+    createdAt: Date;
+  };
+
+  let proofs: ProofRow[] = [];
+  try {
+    const db = await getDbRequired();
+    proofs = (await db
+      .collection("proofs")
+      .find({ uploader: session.username })
+      .sort({ createdAt: -1 })
+      .toArray()) as unknown as ProofRow[];
+  } catch (e) {
+    if (e instanceof MongoUnavailableError) {
+      redirect("/?erro=banco");
+    }
+    throw e;
+  }
 
   const initialProofs = proofs.map((proof) => ({
     id: String(proof._id),

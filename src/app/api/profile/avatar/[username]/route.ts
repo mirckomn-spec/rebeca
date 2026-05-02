@@ -1,25 +1,15 @@
 import { NextResponse } from "next/server";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { getSessionFromCookie } from "@/lib/auth";
-import { getDbSafe } from "@/lib/mongodb";
+import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
 
-const AVATAR_FALLBACK_META = path.join(process.cwd(), "storage", "avatar-fallback.json");
-
-type AvatarMeta = Record<
-  string,
-  {
-    avatarUrl: string;
+function mongo503(e: unknown) {
+  if (e instanceof MongoUnavailableError) {
+    return NextResponse.json(
+      { error: "Banco de dados indisponivel.", details: e.message },
+      { status: 503 },
+    );
   }
->;
-
-async function readAvatarMeta() {
-  try {
-    const raw = await readFile(AVATAR_FALLBACK_META, "utf-8");
-    return JSON.parse(raw) as AvatarMeta;
-  } catch {
-    return {};
-  }
+  return null;
 }
 
 export async function GET(
@@ -38,24 +28,21 @@ export async function GET(
     return NextResponse.json({ error: "Avatar nao disponivel." }, { status: 404 });
   }
 
-  const { db } = await getDbSafe();
-  if (!db) {
-    const meta = await readAvatarMeta();
-    const item = meta[normalized];
-    if (!item) {
+  try {
+    const db = await getDbRequired();
+    const profile = await db
+      .collection("profiles")
+      .findOne<{ avatarUrl?: string }>({
+        username: normalized,
+      });
+    if (!profile?.avatarUrl) {
       return NextResponse.json({ error: "Avatar nao encontrado." }, { status: 404 });
     }
-    return NextResponse.redirect(item.avatarUrl);
-  }
 
-  const profile = await db
-    .collection("profiles")
-    .findOne<{ avatarUrl?: string }>({
-      username: normalized,
-    });
-  if (!profile?.avatarUrl) {
-    return NextResponse.json({ error: "Avatar nao encontrado." }, { status: 404 });
+    return NextResponse.redirect(profile.avatarUrl);
+  } catch (e) {
+    const r = mongo503(e);
+    if (r) return r;
+    throw e;
   }
-
-  return NextResponse.redirect(profile.avatarUrl);
 }

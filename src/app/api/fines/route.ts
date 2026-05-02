@@ -1,25 +1,7 @@
 import { NextResponse } from "next/server";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
 import { ObjectId } from "mongodb";
 import { getSessionFromCookie } from "@/lib/auth";
-import { getDbSafe } from "@/lib/mongodb";
-
-const FALLBACK_DIR = path.join(process.cwd(), "storage");
-const FALLBACK_FINES_FILE = path.join(FALLBACK_DIR, "fallback-fines.json");
-
-type FineItem = {
-  id: string;
-  username: string;
-  reason: string;
-  durationType: string;
-  durationValue: number | null;
-  penaltyPercent: number | null;
-  expiresAt: string | null;
-  createdAt: string;
-  createdBy: string;
-};
+import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
 
 function parseDuration(type: string, amountRaw: string | null) {
   if (type === "eterno") return null;
@@ -30,18 +12,14 @@ function parseDuration(type: string, amountRaw: string | null) {
   return null;
 }
 
-async function readFallbackFines() {
-  try {
-    const fileContent = await readFile(FALLBACK_FINES_FILE, "utf-8");
-    return JSON.parse(fileContent) as FineItem[];
-  } catch {
-    return [];
+function mongo503(e: unknown) {
+  if (e instanceof MongoUnavailableError) {
+    return NextResponse.json(
+      { error: "Banco de dados indisponivel.", details: e.message },
+      { status: 503 },
+    );
   }
-}
-
-async function writeFallbackFines(items: FineItem[]) {
-  await mkdir(FALLBACK_DIR, { recursive: true });
-  await writeFile(FALLBACK_FINES_FILE, JSON.stringify(items, null, 2), "utf-8");
+  return null;
 }
 
 export async function GET(request: Request) {
@@ -55,27 +33,15 @@ export async function GET(request: Request) {
   const all = session.role === "admin" && searchParams.get("all") === "1";
   const username = session.role === "admin" && target ? target : session.username;
 
-  const { db } = await getDbSafe();
-  const fallbackItems = await readFallbackFines();
-  const fallbackFiltered = all
-    ? fallbackItems
-    : fallbackItems.filter((item) => item.username === username);
+  try {
+    const db = await getDbRequired();
+    const fines = await db
+      .collection("fines")
+      .find(all ? {} : { username })
+      .sort({ createdAt: -1 })
+      .toArray();
 
-  if (!db) {
-    return NextResponse.json(
-      fallbackFiltered.sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-      ),
-    );
-  }
-
-  const fines = await db
-    .collection("fines")
-    .find(all ? {} : { username })
-    .sort({ createdAt: -1 })
-    .toArray();
-
-  const dbItems = fines.map((fine) => ({
+    const dbItems = fines.map((fine) => ({
       id: String(fine._id),
       username: fine.username,
       reason: fine.reason,
@@ -87,11 +53,16 @@ export async function GET(request: Request) {
       createdBy: fine.createdBy ?? "bel",
     }));
 
-  const merged = [...dbItems, ...fallbackFiltered].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-  );
-
-  return NextResponse.json(merged);
+    return NextResponse.json(
+      dbItems.sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      ),
+    );
+  } catch (e) {
+    const r = mongo503(e);
+    if (r) return r;
+    throw e;
+  }
 }
 
 export async function POST(request: Request) {
@@ -137,40 +108,26 @@ export async function POST(request: Request) {
       ? null
       : new Date(now.getTime() + durationMs);
 
-  const { db } = await getDbSafe();
-  if (!db) {
-    const fallbackItems = await readFallbackFines();
-    const nowIso = now.toISOString();
-    const fallbackFine: FineItem = {
-      id: randomUUID(),
+  try {
+    const db = await getDbRequired();
+    const result = await db.collection("fines").insertOne({
       username: normalizedUsername,
       reason: normalizedReason,
       durationType: normalizedType,
       durationValue:
         normalizedType === "eterno" ? null : Number.parseInt(String(durationValue ?? "0"), 10),
       penaltyPercent: normalizedPenalty,
-      expiresAt: expiresAt ? expiresAt.toISOString() : null,
-      createdAt: nowIso,
+      expiresAt,
+      createdAt: now,
       createdBy: session.username,
-    };
-    fallbackItems.push(fallbackFine);
-    await writeFallbackFines(fallbackItems);
-    return NextResponse.json({ ok: true, id: fallbackFine.id, storage: "fallback" });
+    });
+
+    return NextResponse.json({ ok: true, id: String(result.insertedId) });
+  } catch (e) {
+    const r = mongo503(e);
+    if (r) return r;
+    throw e;
   }
-
-  const result = await db.collection("fines").insertOne({
-    username: normalizedUsername,
-    reason: normalizedReason,
-    durationType: normalizedType,
-    durationValue:
-      normalizedType === "eterno" ? null : Number.parseInt(String(durationValue ?? "0"), 10),
-    penaltyPercent: normalizedPenalty,
-    expiresAt,
-    createdAt: now,
-    createdBy: session.username,
-  });
-
-  return NextResponse.json({ ok: true, id: String(result.insertedId) });
 }
 
 export async function DELETE(request: Request) {
@@ -187,30 +144,29 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ error: "Informe o id da multa." }, { status: 400 });
   }
 
-  const fallbackItems = await readFallbackFines();
-  const fallbackFiltered = fallbackItems.filter(
-    (item) => !(item.id === fineId && (!normalizedUsername || item.username === normalizedUsername)),
-  );
-  if (fallbackFiltered.length !== fallbackItems.length) {
-    await writeFallbackFines(fallbackFiltered);
-    return NextResponse.json({ ok: true, storage: "fallback" });
-  }
+  try {
+    const db = await getDbRequired();
 
-  const { db } = await getDbSafe();
-  if (!db) {
-    return NextResponse.json({ error: "Multa nao encontrada." }, { status: 404 });
-  }
+    if (!ObjectId.isValid(fineId)) {
+      return NextResponse.json({ error: "Multa nao encontrada." }, { status: 404 });
+    }
 
-  if (!ObjectId.isValid(fineId)) {
-    return NextResponse.json({ error: "Multa nao encontrada." }, { status: 404 });
-  }
+    const filter: Record<string, unknown> = { _id: new ObjectId(fineId) };
+    if (normalizedUsername) {
+      filter.username = normalizedUsername;
+    }
 
-  const result = await db.collection("fines").deleteOne({ _id: new ObjectId(fineId) });
-  if (!result.deletedCount) {
-    return NextResponse.json({ error: "Multa nao encontrada." }, { status: 404 });
-  }
+    const result = await db.collection("fines").deleteOne(filter);
+    if (!result.deletedCount) {
+      return NextResponse.json({ error: "Multa nao encontrada." }, { status: 404 });
+    }
 
-  return NextResponse.json({ ok: true, storage: "mongodb" });
+    return NextResponse.json({ ok: true, storage: "mongodb" });
+  } catch (e) {
+    const r = mongo503(e);
+    if (r) return r;
+    throw e;
+  }
 }
 
 export async function PATCH(request: Request) {
@@ -262,45 +218,22 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: "Nenhuma alteracao enviada." }, { status: 400 });
   }
 
-  const fallbackItems = await readFallbackFines();
-  const fallbackIdx = fallbackItems.findIndex((item) => item.id === fineId);
-  if (fallbackIdx >= 0) {
-    const current = fallbackItems[fallbackIdx];
-    fallbackItems[fallbackIdx] = {
-      ...current,
-      ...(patch.durationType != null ? { durationType: String(patch.durationType) } : {}),
-      ...(patch.durationValue !== undefined
-        ? { durationValue: (patch.durationValue as number | null) ?? null }
-        : {}),
-      ...(patch.penaltyPercent !== undefined
-        ? { penaltyPercent: Number(patch.penaltyPercent as number) }
-        : {}),
-      ...(Object.prototype.hasOwnProperty.call(patch, "expiresAt")
-        ? {
-            expiresAt:
-              patch.expiresAt instanceof Date
-                ? patch.expiresAt.toISOString()
-                : (patch.expiresAt as string | null),
-          }
-        : {}),
-    };
-    await writeFallbackFines(fallbackItems);
-    return NextResponse.json({ ok: true, storage: "fallback" });
+  try {
+    const db = await getDbRequired();
+    if (!ObjectId.isValid(fineId)) {
+      return NextResponse.json({ error: "Multa nao encontrada." }, { status: 404 });
+    }
+    const result = await db.collection("fines").updateOne(
+      { _id: new ObjectId(fineId) },
+      { $set: patch },
+    );
+    if (!result.matchedCount) {
+      return NextResponse.json({ error: "Multa nao encontrada." }, { status: 404 });
+    }
+    return NextResponse.json({ ok: true, storage: "mongodb" });
+  } catch (e) {
+    const r = mongo503(e);
+    if (r) return r;
+    throw e;
   }
-
-  const { db } = await getDbSafe();
-  if (!db) {
-    return NextResponse.json({ error: "Multa nao encontrada." }, { status: 404 });
-  }
-  if (!ObjectId.isValid(fineId)) {
-    return NextResponse.json({ error: "Multa nao encontrada." }, { status: 404 });
-  }
-  const result = await db.collection("fines").updateOne(
-    { _id: new ObjectId(fineId) },
-    { $set: patch },
-  );
-  if (!result.matchedCount) {
-    return NextResponse.json({ error: "Multa nao encontrada." }, { status: 404 });
-  }
-  return NextResponse.json({ ok: true, storage: "mongodb" });
 }

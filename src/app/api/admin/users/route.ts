@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionFromCookie } from "@/lib/auth";
+import { MongoUnavailableError } from "@/lib/mongodb";
 import {
   createSiteUser,
   generateRandomPassword,
@@ -8,6 +9,16 @@ import {
   setUserDeleted,
 } from "@/lib/site-users";
 import { listMemberUsernames } from "@/lib/members";
+
+function mongo503(error: unknown) {
+  if (error instanceof MongoUnavailableError) {
+    return NextResponse.json(
+      { error: "Banco de dados indisponivel.", details: error.message },
+      { status: 503 },
+    );
+  }
+  return null;
+}
 
 export async function GET() {
   const session = await getSessionFromCookie();
@@ -19,6 +30,8 @@ export async function GET() {
     const memberRoster = await listMemberUsernames();
     return NextResponse.json({ users, memberRoster });
   } catch (error) {
+    const m = mongo503(error);
+    if (m) return m;
     const message = error instanceof Error ? error.message : "Falha ao listar usuarios.";
     return NextResponse.json({ error: message }, { status: 500 });
   }
@@ -58,6 +71,8 @@ export async function POST(request: Request) {
       generatedPassword: randomPassword ? plainPassword : undefined,
     });
   } catch (error) {
+    const m = mongo503(error);
+    if (m) return m;
     const message = error instanceof Error ? error.message : "Falha ao criar usuario.";
     return NextResponse.json({ error: message }, { status: 400 });
   }
@@ -91,6 +106,8 @@ export async function PATCH(request: Request) {
 
     return NextResponse.json({ error: "Acao invalida." }, { status: 400 });
   } catch (error) {
+    const m = mongo503(error);
+    if (m) return m;
     const message = error instanceof Error ? error.message : "Falha ao atualizar usuario.";
     return NextResponse.json({ error: message }, { status: 400 });
   }
@@ -115,6 +132,8 @@ export async function DELETE(request: Request) {
     await setUserDeleted(username, hard);
     return NextResponse.json({ ok: true, mode: hard ? "hard" : "soft" });
   } catch (error) {
+    const m = mongo503(error);
+    if (m) return m;
     const message = error instanceof Error ? error.message : "Falha ao remover usuario.";
     return NextResponse.json({ error: message }, { status: 400 });
   }
