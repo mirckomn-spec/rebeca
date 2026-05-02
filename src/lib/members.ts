@@ -1,9 +1,11 @@
 import { getDbSafe } from "@/lib/mongodb";
+import { getPermanentlyRemovedUsernameSet } from "@/lib/site-users";
 import { ALLOWED_USERS } from "@/lib/users";
 
 /**
  * Lista membros para ranking/metas: uniao dos usuarios estaticos legados
- * com usuarios criados no MongoDB, excluindo contas marcadas como deletadas.
+ * com usuarios criados no MongoDB, excluindo contas encerradas ou apagadas
+ * definitivamente (removed_site_users).
  */
 export async function listMemberUsernames(): Promise<string[]> {
   const staticMembers = Object.keys(ALLOWED_USERS).filter((u) => u !== "bel");
@@ -12,7 +14,7 @@ export async function listMemberUsernames(): Promise<string[]> {
     return staticMembers.sort();
   }
 
-  const [activeRows, deletedRows] = await Promise.all([
+  const [activeRows, deletedRows, removedSet] = await Promise.all([
     db
       .collection("site_users")
       .find({ role: "member", deleted: { $ne: true } })
@@ -23,6 +25,7 @@ export async function listMemberUsernames(): Promise<string[]> {
       .find({ deleted: true })
       .project({ username: 1 })
       .toArray(),
+    getPermanentlyRemovedUsernameSet(db),
   ]);
 
   const deletedSet = new Set(
@@ -30,11 +33,14 @@ export async function listMemberUsernames(): Promise<string[]> {
   );
   const combined = new Set<string>();
   for (const name of staticMembers) {
-    if (!deletedSet.has(name)) combined.add(name);
+    const n = name.toLowerCase();
+    if (!deletedSet.has(n) && !removedSet.has(n)) combined.add(n);
   }
   for (const row of activeRows) {
     const name = String(row.username ?? "").toLowerCase();
-    if (name && name !== "bel" && !deletedSet.has(name)) combined.add(name);
+    if (name && name !== "bel" && !deletedSet.has(name) && !removedSet.has(name)) {
+      combined.add(name);
+    }
   }
   return Array.from(combined).sort();
 }

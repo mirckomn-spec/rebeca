@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { UserAvatar } from "@/components/user-avatar";
 
@@ -231,7 +231,7 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
   const [hotsCredentialsByProfile, setHotsCredentialsByProfile] = useState<
     Partial<Record<"loira" | "morena", HotsProfileCredentials>>
   >({});
-  const [memberRoster, setMemberRoster] = useState<string[]>(FIXED_MEMBER_USERS);
+  const [memberRoster, setMemberRoster] = useState<string[] | null>(null);
   const [managedUsers, setManagedUsers] = useState<ManagedSiteUser[]>([]);
   const [adminUsersMessage, setAdminUsersMessage] = useState("");
   const [newLoginUsername, setNewLoginUsername] = useState("");
@@ -280,8 +280,29 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
   const [rankingPrizeInput, setRankingPrizeInput] = useState<string>("150");
   const [rankingMessage, setRankingMessage] = useState("");
 
-  const rosterForSelects =
-    memberRoster.length > 0 ? memberRoster : FIXED_MEMBER_USERS;
+  const rosterForSelects = memberRoster ?? FIXED_MEMBER_USERS;
+
+  const membrosCards = useMemo(() => {
+    const proofMap = new Map<string, number>();
+    for (const m of membersState) {
+      if (m.role === "admin") continue;
+      proofMap.set(m.username.toLowerCase(), m.totalSales);
+    }
+    const belRow = membersState.find((m) => m.username === "bel");
+    const roster = rosterForSelects
+      .map((u) => u.toLowerCase())
+      .filter((u) => u && u !== "bel");
+    const membroRows = roster.map((username) => ({
+      username,
+      role: "membro" as const,
+      totalSales: proofMap.get(username) ?? 0,
+    }));
+    membroRows.sort((a, b) => a.username.localeCompare(b.username));
+    return [
+      { username: "bel", role: "admin" as const, totalSales: belRow?.totalSales ?? 0 },
+      ...membroRows,
+    ];
+  }, [membersState, rosterForSelects]);
 
   useEffect(() => {
     if (activeSection === "gerenciar-multas") {
@@ -293,7 +314,7 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
     if (activeSection === "hots") {
       loadHotsAccessList();
     }
-    if (activeSection === "usuarios") {
+    if (activeSection === "usuarios" || activeSection === "membros") {
       void loadAdminUsers();
     }
     if (activeSection === "saques") {
@@ -354,11 +375,17 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
     }
     const data = await response.json();
     setManagedUsers((data.users ?? []) as ManagedSiteUser[]);
-    if (Array.isArray(data.memberRoster) && data.memberRoster.length > 0) {
+    if (Array.isArray(data.memberRoster)) {
       setMemberRoster(data.memberRoster as string[]);
     }
     setAdminUsersMessage("");
   }
+
+  useEffect(() => {
+    void loadAdminUsers();
+    // Roster do servidor (Mongo + legado) para abas Membros/Usuarios e selects.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleCreateUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -438,28 +465,36 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
     }
   }
 
-  async function handleRemoveUser(username: string, hard: boolean) {
-    if (!confirm(hard ? "Remover permanentemente esta conta?" : "Encerrar conta (soft delete)?")) {
+  async function handleRemoveUser(username: string) {
+    if (
+      !confirm(
+        "APAGAR DEFINITIVAMENTE este usuario? Remove login, comprovantes, multas, perfil, saques, liberacoes HOTS e ajustes de ranking na tabela. Nao da para desfazer.",
+      )
+    ) {
       return;
     }
     setUserActionBusy(username);
     setAdminUsersMessage("");
     try {
-      const response = await fetch(
-        `/api/admin/users?username=${encodeURIComponent(username)}&hard=${hard ? "1" : "0"}`,
-        { method: "DELETE" },
-      );
+      const response = await fetch("/api/admin/users", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "purge", username }),
+      });
       const data = await response.json();
       if (!response.ok) {
         setAdminUsersMessage(data.error ?? "Falha ao remover usuario.");
         return;
       }
-      setAdminUsersMessage(
-        hard
-          ? `OK: @${username} foi apagado do banco (irreversivel).`
-          : `OK: @${username} teve a conta encerrada (soft delete).`,
-      );
+      setAdminUsersMessage(`OK: @${username} foi removido do site e os dados dele foram apagados.`);
       await loadAdminUsers();
+      await loadProofs();
+      if (activeSection === "membros") {
+        void loadGoalsUsers();
+      }
+      if (memberManageUsername === username.toLowerCase()) {
+        setMemberManageUsername(null);
+      }
     } finally {
       setUserActionBusy(null);
     }
@@ -1544,7 +1579,7 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
 
               {!memberManageUsername ? (
                 <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                  {membersState.map((member) => (
+                  {membrosCards.map((member) => (
                     <div
                       key={`${member.role}-${member.username}`}
                       className="flex flex-wrap items-center gap-3 rounded-xl border border-[#BC8A6F33] bg-[#fff7f3] px-3 py-2 text-sm text-[#7a5643]"
@@ -1989,7 +2024,7 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
                   <tbody>
                     {Array.from(
                       new Set([
-                        ...memberRoster,
+                        ...rosterForSelects,
                         ...managedUsers.map((u) => u.username),
                       ]),
                     )
@@ -2067,17 +2102,9 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
                                 </button>
                                 <button
                                   type="button"
-                                  className="rounded-lg border border-[#BC8A6F66] px-2 py-1 text-xs text-[#7a5643] hover:bg-[#fff7f3] disabled:cursor-not-allowed disabled:opacity-45"
-                                  disabled={rowBusy || deleted}
-                                  onClick={() => handleRemoveUser(uname, false)}
-                                >
-                                  Encerrar
-                                </button>
-                                <button
-                                  type="button"
                                   className="rounded-lg bg-red-100 px-2 py-1 text-xs text-red-800 hover:bg-red-200/80 disabled:cursor-not-allowed disabled:opacity-45"
                                   disabled={rowBusy}
-                                  onClick={() => handleRemoveUser(uname, true)}
+                                  onClick={() => handleRemoveUser(uname)}
                                 >
                                   Apagar
                                 </button>

@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import { randomBytes } from "node:crypto";
+import type { Db } from "mongodb";
 import { getDbRequired, getDbSafe } from "@/lib/mongodb";
 import { ALLOWED_USERS } from "@/lib/users";
 
@@ -14,11 +15,93 @@ export type SiteUserDoc = {
 };
 
 const COLLECTION = "site_users";
+/** Usuarios apagados definitivamente (nao voltam na lista nem no login legado). */
+const REMOVED_COLLECTION = "removed_site_users";
+
+export async function getPermanentlyRemovedUsernameSet(db: Db): Promise<Set<string>> {
+  const rows = await db.collection(REMOVED_COLLECTION).find({}).project({ username: 1 }).toArray();
+  return new Set(
+    rows.map((r) => String(r.username ?? "").toLowerCase()).filter((u) => u && u !== "bel"),
+  );
+}
+
+export async function isPermanentlyRemoved(username: string): Promise<boolean> {
+  const { db } = await getDbSafe();
+  if (!db) return false;
+  const normalized = username.toLowerCase();
+  const doc = await db
+    .collection(REMOVED_COLLECTION)
+    .findOne({ username: normalized }, { projection: { _id: 1 } });
+  return Boolean(doc);
+}
+
+async function purgeRankingOverrideForUser(db: Db, username: string) {
+  const row = (await db.collection("settings").findOne({ key: "ranking" })) as {
+    valueOverridesByUser?: Record<string, number>;
+    valueAdjustmentsByUser?: Record<string, number>;
+  } | null;
+  if (!row) return;
+  const vo = { ...(row.valueOverridesByUser ?? {}) };
+  const va = { ...(row.valueAdjustmentsByUser ?? {}) };
+  let changed = false;
+  for (const key of Object.keys(vo)) {
+    if (key.toLowerCase() === username) {
+      delete vo[key];
+      changed = true;
+    }
+  }
+  for (const key of Object.keys(va)) {
+    if (key.toLowerCase() === username) {
+      delete va[key];
+      changed = true;
+    }
+  }
+  if (changed) {
+    await db.collection("settings").updateOne(
+      { key: "ranking" },
+      { $set: { valueOverridesByUser: vo, valueAdjustmentsByUser: va } },
+    );
+  }
+}
+
+async function purgeMemberFromSite(db: Db, normalized: string, removedBy: string) {
+  await db.collection(REMOVED_COLLECTION).updateOne(
+    { username: normalized },
+    {
+      $set: {
+        username: normalized,
+        removedAt: new Date(),
+        removedBy,
+      },
+    },
+    { upsert: true },
+  );
+
+  await Promise.all([
+    db.collection(COLLECTION).deleteOne({ username: normalized }),
+    db.collection("proofs").deleteMany({
+      $or: [{ uploader: normalized }, { sellerName: normalized }],
+    }),
+    db.collection("fines").deleteMany({ username: normalized }),
+    db.collection("member_controls").deleteOne({ username: normalized }),
+    db.collection("profiles").deleteOne({ username: normalized }),
+    db.collection("hots_access").deleteMany({ username: normalized }),
+    db.collection("withdrawals").deleteMany({ username: normalized }),
+  ]);
+
+  await purgeRankingOverrideForUser(db, normalized);
+}
 
 export async function findSiteUser(username: string) {
   const { db } = await getDbSafe();
   const normalized = username.toLowerCase();
   if (!db) {
+    return null;
+  }
+  const removed = await db
+    .collection(REMOVED_COLLECTION)
+    .findOne({ username: normalized }, { projection: { _id: 1 } });
+  if (removed) {
     return null;
   }
   return db.collection(COLLECTION).findOne<SiteUserDoc>({ username: normalized });
@@ -40,7 +123,7 @@ export async function listSiteUsersForAdmin() {
   const db = await getDbRequired();
   const rows = await db
     .collection(COLLECTION)
-    .find({})
+    .find({ deleted: { $ne: true } })
     .sort({ username: 1 })
     .toArray();
   return rows.map((row) => ({
@@ -58,6 +141,8 @@ export async function createSiteUser(username: string, plainPassword: string) {
   if (!normalized || normalized === "bel") {
     throw new Error("Usuario invalido.");
   }
+  await db.collection(REMOVED_COLLECTION).deleteOne({ username: normalized });
+
   const passwordHash = await hashPassword(plainPassword);
   const existing = await db.collection(COLLECTION).findOne({ username: normalized });
   if (existing && !existing.deleted) {
@@ -116,12 +201,16 @@ export async function setUserBlocked(
   );
 }
 
-export async function setUserDeleted(username: string, hard: boolean) {
+export async function setUserDeleted(
+  username: string,
+  hard: boolean,
+  options?: { removedBy?: string },
+) {
   const db = await getDbRequired();
   const normalized = username.toLowerCase().trim();
   if (normalized === "bel") throw new Error("Nao e possivel remover a conta da Bel.");
   if (hard) {
-    await db.collection(COLLECTION).deleteOne({ username: normalized });
+    await purgeMemberFromSite(db, normalized, options?.removedBy ?? "admin");
     return;
   }
   const existing = await db.collection(COLLECTION).findOne({ username: normalized });

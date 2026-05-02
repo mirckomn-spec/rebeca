@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSessionCookie } from "@/lib/auth";
 import { ALLOWED_USERS, getUserRole } from "@/lib/users";
-import { findSiteUser, verifyPassword } from "@/lib/site-users";
+import { findSiteUser, isPermanentlyRemoved, verifyPassword } from "@/lib/site-users";
 
 export async function POST(request: Request) {
   const { username, password } = await request.json();
@@ -31,6 +31,10 @@ export async function POST(request: Request) {
       role: "admin",
       redirect: "/dashboard",
     });
+  }
+
+  if (await isPermanentlyRemoved(normalizedUsername)) {
+    return NextResponse.json({ error: "Login invalido." }, { status: 401 });
   }
 
   const siteUser = await findSiteUser(normalizedUsername);

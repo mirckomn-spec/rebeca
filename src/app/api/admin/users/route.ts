@@ -104,6 +104,11 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ ok: true });
     }
 
+    if (action === "purge") {
+      await setUserDeleted(username, true, { removedBy: session.username });
+      return NextResponse.json({ ok: true, mode: "hard" });
+    }
+
     return NextResponse.json({ error: "Acao invalida." }, { status: 400 });
   } catch (error) {
     const m = mongo503(error);
@@ -129,7 +134,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "Informe o usuario." }, { status: 400 });
     }
 
-    await setUserDeleted(username, hard);
+    await setUserDeleted(username, hard, { removedBy: session.username });
     return NextResponse.json({ ok: true, mode: hard ? "hard" : "soft" });
   } catch (error) {
     const m = mongo503(error);
