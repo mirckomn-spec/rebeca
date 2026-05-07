@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "mongodb";
 import { getSessionFromCookie } from "@/lib/auth";
 import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
-import { getAllMemberControls } from "@/lib/member-controls";
+import { getAllMemberControls, resolveCommissionPercents } from "@/lib/member-controls";
 
 const DEFAULT_MIN_WITHDRAW = 200;
 const DAILY_TARGET = 150;
@@ -86,17 +86,23 @@ function dayKey(dateInput: string | Date) {
 function computeTodayCommissionPercentForUser(
   username: string,
   proofs: ProofDoc[],
-  commissionPercentOverride?: number | null,
+  options?: {
+    globalCommissionPercentOverride?: number | null;
+    goalReachedCommissionPercentOverride?: number | null;
+    legacyCommissionPercentOverride?: number | null;
+  },
 ) {
-  if (commissionPercentOverride != null) {
-    return Math.min(100, Math.max(0, Number(commissionPercentOverride)));
-  }
+  const commissions = resolveCommissionPercents({
+    commissionPercentOverride: options?.legacyCommissionPercentOverride ?? null,
+    globalCommissionPercentOverride: options?.globalCommissionPercentOverride ?? null,
+    goalReachedCommissionPercentOverride: options?.goalReachedCommissionPercentOverride ?? null,
+  });
   const today = new Date().toISOString().slice(0, 10);
   const todayTotal = proofs
     .filter((proof) => String(proof.uploader ?? "").toLowerCase() === username)
     .filter((proof) => dayKey(proof.createdAt) === today)
     .reduce((acc, proof) => acc + Number(proof.saleValue ?? 0), 0);
-  return todayTotal >= DAILY_TARGET ? 40 : 35;
+  return todayTotal >= DAILY_TARGET ? commissions.goalReached : commissions.global;
 }
 
 function computeAvailableFromProofsAndWithdrawals(
@@ -104,14 +110,20 @@ function computeAvailableFromProofsAndWithdrawals(
   proofs: ProofDoc[],
   withdrawals: WithdrawalDoc[],
   options?: {
-    commissionPercentOverride?: number | null;
+    globalCommissionPercentOverride?: number | null;
+    goalReachedCommissionPercentOverride?: number | null;
+    legacyCommissionPercentOverride?: number | null;
     balanceAdjustment?: number;
   },
 ) {
   const commissionPercent = computeTodayCommissionPercentForUser(
     username,
     proofs,
-    options?.commissionPercentOverride,
+    {
+      globalCommissionPercentOverride: options?.globalCommissionPercentOverride,
+      goalReachedCommissionPercentOverride: options?.goalReachedCommissionPercentOverride,
+      legacyCommissionPercentOverride: options?.legacyCommissionPercentOverride,
+    },
   );
   const grossReal = proofs
     .filter((proof) => String(proof.uploader ?? "").toLowerCase() === username)
@@ -175,7 +187,10 @@ export async function GET(request: Request) {
 
     const control = controlsMap.get(targetUsername);
     const wallet = computeAvailableFromProofsAndWithdrawals(targetUsername, proofs, allWithdrawals, {
-      commissionPercentOverride: control?.commissionPercentOverride ?? null,
+      globalCommissionPercentOverride: control?.globalCommissionPercentOverride ?? null,
+      goalReachedCommissionPercentOverride:
+        control?.goalReachedCommissionPercentOverride ?? null,
+      legacyCommissionPercentOverride: control?.commissionPercentOverride ?? null,
       balanceAdjustment: control?.balanceAdjustment ?? 0,
     });
 
@@ -225,7 +240,10 @@ export async function POST() {
 
     const control = controlsMap.get(sessionUsername);
     const wallet = computeAvailableFromProofsAndWithdrawals(sessionUsername, proofs, withdrawals, {
-      commissionPercentOverride: control?.commissionPercentOverride ?? null,
+      globalCommissionPercentOverride: control?.globalCommissionPercentOverride ?? null,
+      goalReachedCommissionPercentOverride:
+        control?.goalReachedCommissionPercentOverride ?? null,
+      legacyCommissionPercentOverride: control?.commissionPercentOverride ?? null,
       balanceAdjustment: control?.balanceAdjustment ?? 0,
     });
     if (wallet.available < minWithdraw) {
@@ -318,7 +336,10 @@ export async function PATCH(request: Request) {
         proofs,
         allWithdrawals,
         {
-          commissionPercentOverride: control?.commissionPercentOverride ?? null,
+          globalCommissionPercentOverride: control?.globalCommissionPercentOverride ?? null,
+          goalReachedCommissionPercentOverride:
+            control?.goalReachedCommissionPercentOverride ?? null,
+          legacyCommissionPercentOverride: control?.commissionPercentOverride ?? null,
           balanceAdjustment: control?.balanceAdjustment ?? 0,
         },
       ).available;

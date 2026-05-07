@@ -5,10 +5,38 @@ export type MemberControlDoc = {
   balanceAdjustment: number;
   dailyProgressOverride: number | null;
   streakOverride: number | null;
+  /** Compat legado: era comissao unica. */
   commissionPercentOverride: number | null;
+  /** Comissao base/global (aplicada sem bater meta). */
+  globalCommissionPercentOverride: number | null;
+  /** Comissao aplicada quando bate a meta diaria. */
+  goalReachedCommissionPercentOverride: number | null;
   updatedAt: string;
   updatedBy: string;
 };
+
+export const DEFAULT_GLOBAL_COMMISSION_PERCENT = 35;
+export const DEFAULT_GOAL_REACHED_COMMISSION_PERCENT = 40;
+
+export function resolveCommissionPercents(control?: Partial<MemberControlDoc> | null) {
+  const legacy = control?.commissionPercentOverride;
+  const global =
+    control?.globalCommissionPercentOverride != null
+      ? Number(control.globalCommissionPercentOverride)
+      : legacy != null
+        ? Number(legacy)
+        : DEFAULT_GLOBAL_COMMISSION_PERCENT;
+  const goalReached =
+    control?.goalReachedCommissionPercentOverride != null
+      ? Number(control.goalReachedCommissionPercentOverride)
+      : legacy != null
+        ? Number(legacy)
+        : DEFAULT_GOAL_REACHED_COMMISSION_PERCENT;
+  return {
+    global: Math.min(100, Math.max(0, global)),
+    goalReached: Math.min(100, Math.max(0, goalReached)),
+  };
+}
 
 export async function getAllMemberControls() {
   const db = await getDbRequired();
@@ -21,6 +49,14 @@ export async function getAllMemberControls() {
     streakOverride: row.streakOverride == null ? null : Number(row.streakOverride),
     commissionPercentOverride:
       row.commissionPercentOverride == null ? null : Number(row.commissionPercentOverride),
+    globalCommissionPercentOverride:
+      row.globalCommissionPercentOverride == null
+        ? null
+        : Number(row.globalCommissionPercentOverride),
+    goalReachedCommissionPercentOverride:
+      row.goalReachedCommissionPercentOverride == null
+        ? null
+        : Number(row.goalReachedCommissionPercentOverride),
     updatedAt: new Date(row.updatedAt ?? new Date()).toISOString(),
     updatedBy: String(row.updatedBy ?? "system"),
   }));
@@ -48,6 +84,8 @@ export async function upsertMemberControl(
         dailyProgressOverride: null,
         streakOverride: null,
         commissionPercentOverride: null,
+        globalCommissionPercentOverride: null,
+        goalReachedCommissionPercentOverride: null,
       },
     },
     { upsert: true },
@@ -62,6 +100,14 @@ export async function upsertMemberControl(
     streakOverride: row?.streakOverride == null ? null : Number(row.streakOverride),
     commissionPercentOverride:
       row?.commissionPercentOverride == null ? null : Number(row.commissionPercentOverride),
+    globalCommissionPercentOverride:
+      row?.globalCommissionPercentOverride == null
+        ? null
+        : Number(row.globalCommissionPercentOverride),
+    goalReachedCommissionPercentOverride:
+      row?.goalReachedCommissionPercentOverride == null
+        ? null
+        : Number(row.goalReachedCommissionPercentOverride),
     updatedAt: new Date(row?.updatedAt ?? new Date()).toISOString(),
     updatedBy: String(row?.updatedBy ?? updatedBy),
   } as MemberControlDoc;

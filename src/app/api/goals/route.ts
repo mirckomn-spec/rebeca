@@ -2,7 +2,12 @@ import { NextResponse } from "next/server";
 import { getSessionFromCookie } from "@/lib/auth";
 import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
 import { listMemberUsernames } from "@/lib/members";
-import { getAllMemberControls, upsertMemberControl } from "@/lib/member-controls";
+import {
+  getAllMemberControls,
+  upsertMemberControl,
+  resolveCommissionPercents,
+  DEFAULT_GLOBAL_COMMISSION_PERCENT,
+} from "@/lib/member-controls";
 
 const DAILY_TARGET = 150;
 
@@ -96,12 +101,8 @@ export async function GET() {
             ? Math.max(0, Number(control.streakOverride))
             : computeStreakDays(username);
         const bonusActive = progress >= 100;
-        const commissionPercent =
-          control?.commissionPercentOverride != null
-            ? Number(control.commissionPercentOverride)
-            : bonusActive
-              ? 40
-              : 35;
+        const commissions = resolveCommissionPercents(control);
+        const commissionPercent = bonusActive ? commissions.goalReached : commissions.global;
         return {
           username,
           total: Number(total.toFixed(2)),
@@ -110,6 +111,8 @@ export async function GET() {
           streakDays,
           bonusActive,
           commissionPercent,
+          globalCommissionPercent: commissions.global,
+          goalReachedCommissionPercent: commissions.goalReached,
         };
       })
       .sort((a, b) => b.total - a.total);
@@ -121,7 +124,9 @@ export async function GET() {
       progress: 0,
       streakDays: 0,
       bonusActive: false,
-      commissionPercent: 35,
+      commissionPercent: DEFAULT_GLOBAL_COMMISSION_PERCENT,
+      globalCommissionPercent: DEFAULT_GLOBAL_COMMISSION_PERCENT,
+      goalReachedCommissionPercent: 40,
     };
 
     return NextResponse.json({
@@ -150,6 +155,8 @@ export async function PATCH(request: Request) {
         dailyProgressOverride?: number | null;
         streakOverride?: number | null;
         commissionPercentOverride?: number | null;
+        globalCommissionPercentOverride?: number | null;
+        goalReachedCommissionPercentOverride?: number | null;
         balanceAdjustmentDelta?: number;
       }
     | null;
@@ -167,6 +174,8 @@ export async function PATCH(request: Request) {
       dailyProgressOverride: null,
       streakOverride: null,
       commissionPercentOverride: null,
+      globalCommissionPercentOverride: null,
+      goalReachedCommissionPercentOverride: null,
       updatedAt: new Date().toISOString(),
       updatedBy: session.username,
     };
@@ -176,6 +185,8 @@ export async function PATCH(request: Request) {
       dailyProgressOverride?: number | null;
       streakOverride?: number | null;
       commissionPercentOverride?: number | null;
+      globalCommissionPercentOverride?: number | null;
+      goalReachedCommissionPercentOverride?: number | null;
     } = {};
 
     if (body?.balanceAdjustmentDelta != null) {
@@ -196,6 +207,18 @@ export async function PATCH(request: Request) {
     if (Object.prototype.hasOwnProperty.call(body ?? {}, "commissionPercentOverride")) {
       const v = body?.commissionPercentOverride;
       patch.commissionPercentOverride =
+        v == null ? null : Math.min(100, Math.max(0, Number(v)));
+    }
+    if (Object.prototype.hasOwnProperty.call(body ?? {}, "globalCommissionPercentOverride")) {
+      const v = body?.globalCommissionPercentOverride;
+      patch.globalCommissionPercentOverride =
+        v == null ? null : Math.min(100, Math.max(0, Number(v)));
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(body ?? {}, "goalReachedCommissionPercentOverride")
+    ) {
+      const v = body?.goalReachedCommissionPercentOverride;
+      patch.goalReachedCommissionPercentOverride =
         v == null ? null : Math.min(100, Math.max(0, Number(v)));
     }
 

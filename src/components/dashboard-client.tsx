@@ -93,6 +93,8 @@ type GoalAdminItem = {
   streakDays: number;
   bonusActive: boolean;
   commissionPercent: number;
+  globalCommissionPercent: number;
+  goalReachedCommissionPercent: number;
 };
 
 type AdminWithdrawal = {
@@ -261,7 +263,8 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
   const [memberBalanceDeltaInput, setMemberBalanceDeltaInput] = useState("");
   const [memberGoalTodayInput, setMemberGoalTodayInput] = useState("");
   const [memberStreakInput, setMemberStreakInput] = useState("");
-  const [memberCommissionInput, setMemberCommissionInput] = useState("");
+  const [memberGoalCommissionInput, setMemberGoalCommissionInput] = useState("");
+  const [memberGlobalCommissionInput, setMemberGlobalCommissionInput] = useState("");
   const [editingProofId, setEditingProofId] = useState<string | null>(null);
   const [editingProofProductName, setEditingProofProductName] = useState("");
   const [editingProofSaleValue, setEditingProofSaleValue] = useState("");
@@ -364,7 +367,12 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
     if (!goal) return;
     setMemberGoalTodayInput(String(Number(goal.total ?? 0).toFixed(2)));
     setMemberStreakInput(String(Math.max(0, Number(goal.streakDays ?? 0))));
-    setMemberCommissionInput(String(Number(goal.commissionPercent ?? 35).toFixed(2)));
+    setMemberGoalCommissionInput(
+      String(Number(goal.goalReachedCommissionPercent ?? 40).toFixed(2)),
+    );
+    setMemberGlobalCommissionInput(
+      String(Number(goal.globalCommissionPercent ?? 35).toFixed(2)),
+    );
   }, [memberManageUsername, goalsUsers]);
 
   async function loadAdminUsers() {
@@ -1682,7 +1690,10 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
                     </article>
 
                     <article className="rounded-xl border border-[#BC8A6F33] bg-white p-3">
-                      <p className="text-sm font-medium text-[#7a5643]">Meta, foguinho e comissao</p>
+                      <p className="text-sm font-medium text-[#7a5643]">Meta, foguinho e comissao de meta</p>
+                      <p className="mt-1 text-[11px] text-[#9a725c]">
+                        Esta comissao entra quando a pessoa bate a meta diaria.
+                      </p>
                       <div className="mt-2 grid gap-2 sm:grid-cols-3">
                         <input
                           className="rounded-lg border border-[#BC8A6F66] px-2 py-1 text-xs text-[#7a5643]"
@@ -1701,9 +1712,9 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
                         <input
                           className="rounded-lg border border-[#BC8A6F66] px-2 py-1 text-xs text-[#7a5643]"
                           inputMode="decimal"
-                          placeholder="Comissao (%)"
-                          value={memberCommissionInput}
-                          onChange={(e) => setMemberCommissionInput(e.target.value)}
+                          placeholder="Comissao da meta (%)"
+                          value={memberGoalCommissionInput}
+                          onChange={(e) => setMemberGoalCommissionInput(e.target.value)}
                         />
                       </div>
                       <div className="mt-2 flex flex-wrap gap-1">
@@ -1736,18 +1747,56 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
                           disabled={memberControlBusy}
                           onClick={() =>
                             void patchMemberControls({
-                              commissionPercentOverride: Number(memberCommissionInput.replace(",", ".")),
+                              goalReachedCommissionPercentOverride: Number(
+                                memberGoalCommissionInput.replace(",", "."),
+                              ),
                             })
                           }
                           className="rounded-lg border border-[#BC8A6F66] px-2 py-1 text-xs text-[#7a5643] hover:bg-[#fff7f3] disabled:opacity-45"
                         >
-                          Salvar comissao
+                          Salvar comissao da meta
                         </button>
                       </div>
                       {selectedMemberGoal ? (
                         <p className="mt-2 text-xs text-[#9a725c]">
                           Atual: meta hoje R$ {Number(selectedMemberGoal.total ?? 0).toFixed(2)} | foguinho{" "}
-                          {selectedMemberGoal.streakDays} | comissao {selectedMemberGoal.commissionPercent.toFixed(2)}%
+                          {selectedMemberGoal.streakDays} | comissao da meta{" "}
+                          {selectedMemberGoal.goalReachedCommissionPercent.toFixed(2)}%
+                        </p>
+                      ) : null}
+                    </article>
+                    <article className="rounded-xl border border-[#BC8A6F88] bg-[#fff3ec] p-3 shadow-sm">
+                      <p className="text-sm font-semibold text-[#7a5643]">Comissao GLOBAL (destaque)</p>
+                      <p className="mt-1 text-[11px] text-[#9a725c]">
+                        Percentual padrao da pessoa quando ainda nao bateu a meta do dia.
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <input
+                          className="w-44 rounded-lg border-2 border-[#BC8A6F88] px-2 py-1 text-sm font-medium text-[#7a5643]"
+                          inputMode="decimal"
+                          placeholder="Comissao global (%)"
+                          value={memberGlobalCommissionInput}
+                          onChange={(e) => setMemberGlobalCommissionInput(e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          disabled={memberControlBusy}
+                          onClick={() =>
+                            void patchMemberControls({
+                              globalCommissionPercentOverride: Number(
+                                memberGlobalCommissionInput.replace(",", "."),
+                              ),
+                            })
+                          }
+                          className="rounded-lg bg-[#BC8A6F] px-3 py-1.5 text-xs font-semibold text-white hover:brightness-95 disabled:opacity-45"
+                        >
+                          Salvar comissao GLOBAL
+                        </button>
+                      </div>
+                      {selectedMemberGoal ? (
+                        <p className="mt-2 text-xs text-[#9a725c]">
+                          Atual global: {selectedMemberGoal.globalCommissionPercent.toFixed(2)}% | efetiva hoje:{" "}
+                          {selectedMemberGoal.commissionPercent.toFixed(2)}%
                         </p>
                       ) : null}
                     </article>
