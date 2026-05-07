@@ -85,9 +85,24 @@ type WithdrawalsResponse = {
     commissionPercent: number;
     approvedTotal: number;
     grossReal: number;
+    referralBonusAmount?: number;
     available: number;
   };
   withdrawals: WithdrawalEntry[];
+};
+
+type ReferralOverview = {
+  myCode: string;
+  bonusPercent: number;
+  myInviter: { inviterUsername: string; codeUsed: string; linkedAt: string } | null;
+  invitees: {
+    inviteeUsername: string;
+    codeUsed: string;
+    linkedAt: string;
+    totalSold: number;
+    referralBonus: number;
+  }[];
+  referralBonusTotal: number;
 };
 
 type UserHotsAccessItem = {
@@ -115,6 +130,7 @@ type PainelSection =
   | "tabela"
   | "explicacoes"
   | "perfil"
+  | "indicacao"
   | "multas"
   | "metas"
   | "hots";
@@ -242,6 +258,9 @@ export default function MembrosPainelClient({
   const [withdrawBusy, setWithdrawBusy] = useState(false);
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [referralData, setReferralData] = useState<ReferralOverview | null>(null);
+  const [referralCodeInput, setReferralCodeInput] = useState("");
+  const [referralBusy, setReferralBusy] = useState(false);
   const [explanationTopic, setExplanationTopic] = useState<"site" | "vendas">("site");
   const [hotsAccess, setHotsAccess] = useState<UserHotsAccessItem[]>([]);
   const [openedHotProfile, setOpenedHotProfile] = useState<"loira" | "morena" | null>(null);
@@ -276,6 +295,12 @@ export default function MembrosPainelClient({
     setWithdrawalsData((await response.json()) as WithdrawalsResponse);
   }
 
+  async function loadReferrals() {
+    const response = await fetch("/api/referrals");
+    if (!response.ok) return;
+    setReferralData((await response.json()) as ReferralOverview);
+  }
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- carrega ranking ao montar
     void loadRanking();
@@ -297,7 +322,7 @@ export default function MembrosPainelClient({
           Array.isArray(accessData) ? accessData : accessData ? [accessData] : [],
         );
       }
-      await loadWithdrawals();
+      await Promise.all([loadWithdrawals(), loadReferrals()]);
     }
     loadExtraData();
   }, []);
@@ -311,6 +336,7 @@ export default function MembrosPainelClient({
       void loadGoals();
       void loadMyProofs();
       void loadWithdrawals();
+      void loadReferrals();
     }, 5000);
     return () => clearInterval(interval);
   }, [activeSection]);
@@ -419,6 +445,33 @@ export default function MembrosPainelClient({
     }
   }
 
+  async function handleApplyReferralCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!referralCodeInput.trim()) {
+      setMessage("Informe um codigo de indicacao.");
+      return;
+    }
+    setReferralBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/referrals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: referralCodeInput.trim() }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setMessage(String(data.error ?? "Falha ao aplicar codigo."));
+        return;
+      }
+      setReferralCodeInput("");
+      setMessage("Codigo de indicacao aplicado com sucesso.");
+      await Promise.all([loadReferrals(), loadWithdrawals()]);
+    } finally {
+      setReferralBusy(false);
+    }
+  }
+
   const rows = ranking?.[rankingTab] ?? [];
   const activePersonalPenaltyPercent = activePenaltyPercentFromFines(fines);
   const commissionPercent = goals?.current.commissionPercent ?? 35;
@@ -524,6 +577,16 @@ export default function MembrosPainelClient({
                   }}
                 >
                   Perfil
+                </button>
+                <button
+                  type="button"
+                  className="mt-1 w-full rounded-lg bg-[#fff7f3] px-3 py-2 text-left text-sm text-[#7a5643]"
+                  onClick={() => {
+                    setActiveSection("indicacao");
+                    setProfileMenuOpen(false);
+                  }}
+                >
+                  Indicacao
                 </button>
               </div>
             ) : null}
@@ -1128,6 +1191,93 @@ export default function MembrosPainelClient({
                   Salvar foto de perfil
                 </button>
               </form>
+            </>
+          ) : null}
+
+          {activeSection === "indicacao" ? (
+            <>
+              <h2 className="text-2xl text-[#7a5643]">Indicacao</h2>
+              <p className="mt-2 text-sm text-[#9a725c]">
+                Quando alguem usa seu codigo, voce recebe <strong>{referralData?.bonusPercent ?? 4}%</strong> em
+                cima de tudo que essa pessoa vender.
+              </p>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <article className="rounded-2xl border border-[#BC8A6F44] bg-[#fff7f3] p-4">
+                  <p className="text-sm text-[#9a725c]">Seu codigo exclusivo</p>
+                  <p className="mt-1 text-2xl font-semibold tracking-wide text-[#7a5643]">
+                    {referralData?.myCode ?? "..."}
+                  </p>
+                  <p className="mt-2 text-xs text-[#9a725c]">
+                    Compartilhe este codigo. O bonus cai para voce, nao para quem usa.
+                  </p>
+                </article>
+                <article className="rounded-2xl border border-[#BC8A6F44] bg-[#fff7f3] p-4">
+                  <p className="text-sm text-[#9a725c]">Bonus acumulado por indicacao</p>
+                  <p className="mt-1 text-2xl font-semibold text-[#7a5643]">
+                    R$ {Number(referralData?.referralBonusTotal ?? 0).toFixed(2)}
+                  </p>
+                  <p className="mt-2 text-xs text-[#9a725c]">
+                    Esse valor tambem entra no seu saldo disponivel para saque.
+                  </p>
+                </article>
+              </div>
+
+              <form
+                className="mt-4 rounded-2xl border border-[#BC8A6F44] bg-[#fff7f3] p-4"
+                onSubmit={handleApplyReferralCode}
+              >
+                <p className="text-sm font-medium text-[#7a5643]">Usar codigo de convite</p>
+                {referralData?.myInviter ? (
+                  <p className="mt-1 text-xs text-[#9a725c]">
+                    Codigo ja vinculado: <strong>{referralData.myInviter.codeUsed}</strong> (de @
+                    {referralData.myInviter.inviterUsername}).
+                  </p>
+                ) : (
+                  <p className="mt-1 text-xs text-[#9a725c]">
+                    Voce pode vincular apenas um codigo, uma unica vez.
+                  </p>
+                )}
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <input
+                    className="w-64 rounded-xl border border-[#BC8A6F66] bg-white px-3 py-2 text-sm text-[#7a5643]"
+                    placeholder="Digite o codigo de convite"
+                    value={referralCodeInput}
+                    onChange={(e) => setReferralCodeInput(e.target.value.toUpperCase())}
+                    disabled={Boolean(referralData?.myInviter) || referralBusy}
+                  />
+                  <button
+                    type="submit"
+                    disabled={Boolean(referralData?.myInviter) || referralBusy}
+                    className="rounded-xl bg-[#BC8A6F] px-3 py-2 text-xs text-white hover:brightness-95 disabled:opacity-50"
+                  >
+                    {referralBusy ? "Aplicando..." : "Aplicar codigo"}
+                  </button>
+                </div>
+              </form>
+
+              <div className="mt-4 rounded-2xl border border-[#BC8A6F44] bg-white p-4">
+                <p className="text-sm font-medium text-[#7a5643]">Pessoas que usaram seu codigo</p>
+                <div className="mt-3 grid gap-2">
+                  {(referralData?.invitees ?? []).length === 0 ? (
+                    <p className="text-sm text-[#9a725c]">Ninguem usou seu codigo ainda.</p>
+                  ) : (
+                    (referralData?.invitees ?? []).map((item) => (
+                      <article
+                        key={`${item.inviteeUsername}-${item.linkedAt}`}
+                        className="rounded-xl border border-[#BC8A6F33] bg-[#fff7f3] px-3 py-2"
+                      >
+                        <p className="text-sm text-[#7a5643]">
+                          @{item.inviteeUsername} - vendeu R$ {item.totalSold.toFixed(2)}
+                        </p>
+                        <p className="text-xs text-[#9a725c]">
+                          Seu bonus ({referralData?.bonusPercent ?? 4}%): R$ {item.referralBonus.toFixed(2)}
+                        </p>
+                      </article>
+                    ))
+                  )}
+                </div>
+              </div>
             </>
           ) : null}
 

@@ -4,6 +4,7 @@ import type { Db } from "mongodb";
 import { getSessionFromCookie } from "@/lib/auth";
 import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
 import { getAllMemberControls, resolveCommissionPercents } from "@/lib/member-controls";
+import { getInviteesByInviter, getReferralBonusPercent } from "@/lib/referrals";
 
 const DEFAULT_MIN_WITHDRAW = 200;
 const DAILY_TARGET = 150;
@@ -79,6 +80,20 @@ async function loadWithdrawals(db: Db): Promise<WithdrawalDoc[]> {
   );
 }
 
+async function loadReferralBonusForUser(
+  db: Db,
+  username: string,
+  proofs: ProofDoc[],
+): Promise<number> {
+  const invitees = await getInviteesByInviter(db, username);
+  if (invitees.length === 0) return 0;
+  const inviteeSet = new Set(invitees.map((i) => i.inviteeUsername));
+  const invitedTotal = proofs
+    .filter((proof) => inviteeSet.has(String(proof.uploader ?? "").toLowerCase()))
+    .reduce((acc, proof) => acc + Number(proof.saleValue ?? 0), 0);
+  return Number((invitedTotal * (getReferralBonusPercent() / 100)).toFixed(2));
+}
+
 function dayKey(dateInput: string | Date) {
   return new Date(dateInput).toISOString().slice(0, 10);
 }
@@ -114,6 +129,7 @@ function computeAvailableFromProofsAndWithdrawals(
     goalReachedCommissionPercentOverride?: number | null;
     legacyCommissionPercentOverride?: number | null;
     balanceAdjustment?: number;
+    referralBonusAmount?: number;
   },
 ) {
   const commissionPercent = computeTodayCommissionPercentForUser(
@@ -136,12 +152,16 @@ function computeAvailableFromProofsAndWithdrawals(
     )
     .reduce((acc, w) => acc + Number(w.amount ?? 0), 0);
   const balanceAdjustment = Number(options?.balanceAdjustment ?? 0);
+  const referralBonusAmount = Number(options?.referralBonusAmount ?? 0);
   return {
     commissionPercent,
     balanceAdjustment: Number(balanceAdjustment.toFixed(2)),
+    referralBonusAmount: Number(referralBonusAmount.toFixed(2)),
     approvedTotal: Number(approvedTotal.toFixed(2)),
     grossReal: Number(grossReal.toFixed(2)),
-    available: Number(Math.max(0, grossReal - approvedTotal + balanceAdjustment).toFixed(2)),
+    available: Number(
+      Math.max(0, grossReal + referralBonusAmount - approvedTotal + balanceAdjustment).toFixed(2),
+    ),
   };
 }
 
@@ -186,12 +206,14 @@ export async function GET(request: Request) {
         : allWithdrawals.filter((w) => w.username === sessionUsername);
 
     const control = controlsMap.get(targetUsername);
+    const referralBonusAmount = await loadReferralBonusForUser(db, targetUsername, proofs);
     const wallet = computeAvailableFromProofsAndWithdrawals(targetUsername, proofs, allWithdrawals, {
       globalCommissionPercentOverride: control?.globalCommissionPercentOverride ?? null,
       goalReachedCommissionPercentOverride:
         control?.goalReachedCommissionPercentOverride ?? null,
       legacyCommissionPercentOverride: control?.commissionPercentOverride ?? null,
       balanceAdjustment: control?.balanceAdjustment ?? 0,
+      referralBonusAmount,
     });
 
     return NextResponse.json({
@@ -239,12 +261,14 @@ export async function POST() {
     }
 
     const control = controlsMap.get(sessionUsername);
+    const referralBonusAmount = await loadReferralBonusForUser(db, sessionUsername, proofs);
     const wallet = computeAvailableFromProofsAndWithdrawals(sessionUsername, proofs, withdrawals, {
       globalCommissionPercentOverride: control?.globalCommissionPercentOverride ?? null,
       goalReachedCommissionPercentOverride:
         control?.goalReachedCommissionPercentOverride ?? null,
       legacyCommissionPercentOverride: control?.commissionPercentOverride ?? null,
       balanceAdjustment: control?.balanceAdjustment ?? 0,
+      referralBonusAmount,
     });
     if (wallet.available < minWithdraw) {
       return NextResponse.json(
@@ -331,6 +355,7 @@ export async function PATCH(request: Request) {
       const allWithdrawals = await loadWithdrawals(db);
       const targetUsername = String(target.username ?? "").toLowerCase();
       const control = controlsMap.get(targetUsername);
+      const referralBonusAmount = await loadReferralBonusForUser(db, targetUsername, proofs);
       amountToSave = computeAvailableFromProofsAndWithdrawals(
         targetUsername,
         proofs,
@@ -341,6 +366,7 @@ export async function PATCH(request: Request) {
             control?.goalReachedCommissionPercentOverride ?? null,
           legacyCommissionPercentOverride: control?.commissionPercentOverride ?? null,
           balanceAdjustment: control?.balanceAdjustment ?? 0,
+          referralBonusAmount,
         },
       ).available;
     }
