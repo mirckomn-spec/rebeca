@@ -5,7 +5,7 @@ import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
 function mongo503(e: unknown) {
   if (e instanceof MongoUnavailableError) {
     return NextResponse.json(
-      { error: "Banco de dados indisponivel.", details: e.message },
+      { error: "Servico temporariamente indisponivel. Tente novamente em instantes." },
       { status: 503 },
     );
   }

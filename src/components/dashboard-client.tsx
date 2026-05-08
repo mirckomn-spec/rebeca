@@ -1,8 +1,10 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { UserAvatar } from "@/components/user-avatar";
+
+const PROOF_COOLDOWN_MS = 10_000;
 
 const ADMIN_RANKING_LABELS: Record<"d1" | "d7" | "d14" | "d31", string> = {
   d1: "Ultimas 24 horas",
@@ -188,13 +190,13 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
     | "saques"
     | "configuracoes"
     | "gerenciar-multas"
-    | "hots";
+    | "hots"
+    | "indicacoes";
 
   const router = useRouter();
   const [proofs, setProofs] = useState(initialProofs);
   const [membersState, setMembersState] = useState(members);
   const [activeSection, setActiveSection] = useState<DashboardSection>("dashboard");
-  const [sellerName, setSellerName] = useState("");
   const [proofTargetUser, setProofTargetUser] = useState("camila");
   const [productName, setProductName] = useState("");
   const [saleValue, setSaleValue] = useState("");
@@ -256,6 +258,59 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
   const [withdrawMinInput, setWithdrawMinInput] = useState("200");
   const [blockReasonTargetUser, setBlockReasonTargetUser] = useState<string | null>(null);
   const [blockReasonDraft, setBlockReasonDraft] = useState("");
+  const [revealedPasswordByUser, setRevealedPasswordByUser] = useState<Record<string, string>>({});
+  const [passwordRevealBusyUser, setPasswordRevealBusyUser] = useState<string | null>(null);
+  const [passwordRevealError, setPasswordRevealError] = useState<string>("");
+  const [referralsAdminData, setReferralsAdminData] = useState<{
+    bonusPercent: number;
+    defaultBonusPercent: number;
+    links: {
+      inviterUsername: string;
+      inviteeUsername: string;
+      codeUsed: string;
+      linkedAt: string;
+      totalSold: number;
+      referralBonus: number;
+    }[];
+    groupedByInviter: {
+      inviterUsername: string;
+      totalSold: number;
+      referralBonus: number;
+      invitees: {
+        inviterUsername: string;
+        inviteeUsername: string;
+        codeUsed: string;
+        linkedAt: string;
+        totalSold: number;
+        referralBonus: number;
+      }[];
+    }[];
+  } | null>(null);
+  const [referralsBonusInput, setReferralsBonusInput] = useState<string>("4");
+  const [referralsAdminMessage, setReferralsAdminMessage] = useState("");
+  const [referralsAdminBusy, setReferralsAdminBusy] = useState(false);
+  const [proofCooldownRemaining, setProofCooldownRemaining] = useState(0);
+  const proofCooldownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (proofCooldownTimerRef.current) clearInterval(proofCooldownTimerRef.current);
+    };
+  }, []);
+
+  function startProofCooldown(durationMs: number) {
+    if (proofCooldownTimerRef.current) clearInterval(proofCooldownTimerRef.current);
+    const endsAt = Date.now() + durationMs;
+    setProofCooldownRemaining(durationMs);
+    proofCooldownTimerRef.current = setInterval(() => {
+      const remaining = Math.max(0, endsAt - Date.now());
+      setProofCooldownRemaining(remaining);
+      if (remaining <= 0 && proofCooldownTimerRef.current) {
+        clearInterval(proofCooldownTimerRef.current);
+        proofCooldownTimerRef.current = null;
+      }
+    }, 100);
+  }
   const [goalsUsers, setGoalsUsers] = useState<GoalAdminItem[]>([]);
   const [memberWalletAvailable, setMemberWalletAvailable] = useState<number>(0);
   const [memberControlMessage, setMemberControlMessage] = useState("");
@@ -331,6 +386,9 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
     }
     if (activeSection === "tabela") {
       void loadAdminRanking();
+    }
+    if (activeSection === "indicacoes") {
+      void loadReferralsAdmin();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSection, fineUser, fineAdminTab]);
@@ -470,6 +528,37 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
       await loadAdminUsers();
     } finally {
       setUserActionBusy(null);
+    }
+  }
+
+  async function handleRevealPassword(username: string) {
+    if (revealedPasswordByUser[username]) {
+      setRevealedPasswordByUser((prev) => {
+        const next = { ...prev };
+        delete next[username];
+        return next;
+      });
+      return;
+    }
+    setPasswordRevealBusyUser(username);
+    setPasswordRevealError("");
+    try {
+      const response = await fetch(
+        `/api/admin/users/password?username=${encodeURIComponent(username)}`,
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setPasswordRevealError(
+          `@${username}: ${String(data?.error ?? "Falha ao recuperar senha.")}`,
+        );
+        return;
+      }
+      setRevealedPasswordByUser((prev) => ({
+        ...prev,
+        [username]: String(data?.password ?? ""),
+      }));
+    } finally {
+      setPasswordRevealBusyUser(null);
     }
   }
 
@@ -619,6 +708,49 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
     await loadAdminRanking();
   }
 
+  async function loadReferralsAdmin() {
+    setReferralsAdminMessage("");
+    const response = await fetch("/api/admin/referrals");
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      setReferralsAdminMessage(String(data?.error ?? "Falha ao carregar indicacoes."));
+      setReferralsAdminData(null);
+      return;
+    }
+    const data = (await response.json()) as NonNullable<typeof referralsAdminData>;
+    setReferralsAdminData(data);
+    setReferralsBonusInput(String(Number(data.bonusPercent ?? 4)));
+  }
+
+  async function handleSaveReferralsBonusPercent(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setReferralsAdminBusy(true);
+    setReferralsAdminMessage("");
+    try {
+      const value = Number(referralsBonusInput.replace(",", "."));
+      if (!Number.isFinite(value) || value < 0 || value > 100) {
+        setReferralsAdminMessage("Percentual invalido. Use um numero entre 0 e 100.");
+        return;
+      }
+      const response = await fetch("/api/admin/referrals", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bonusPercent: value }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setReferralsAdminMessage(String(data?.error ?? "Falha ao salvar percentual."));
+        return;
+      }
+      setReferralsAdminMessage(
+        `Percentual de indicacao atualizado para ${Number(data?.bonusPercent ?? value).toFixed(2)}%.`,
+      );
+      await loadReferralsAdmin();
+    } finally {
+      setReferralsAdminBusy(false);
+    }
+  }
+
   async function loadGoalsUsers() {
     const response = await fetch("/api/goals");
     if (!response.ok) return;
@@ -681,6 +813,7 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (loading || proofCooldownRemaining > 0) return;
     if (!file) {
       setMessage("Selecione um print ou gravacao.");
       return;
@@ -690,7 +823,6 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
     setMessage("");
 
     const formData = new FormData();
-    formData.set("sellerName", sellerName);
     formData.set("uploader", proofTargetUser);
     formData.set("productName", productName);
     formData.set("saleValue", saleValue);
@@ -700,19 +832,27 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
       method: "POST",
       body: formData,
     });
-    const data = await response.json();
+    const data = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      retryAfterMs?: number;
+      cooldownMs?: number;
+    };
     setLoading(false);
 
     if (!response.ok) {
+      if (response.status === 429) {
+        const ms = Number(data.retryAfterMs ?? PROOF_COOLDOWN_MS);
+        startProofCooldown(Number.isFinite(ms) && ms > 0 ? ms : PROOF_COOLDOWN_MS);
+      }
       setMessage(data.error ?? "Falha ao enviar comprovante.");
       return;
     }
 
     setMessage("Comprovante enviado com sucesso!");
-    setSellerName("");
     setProductName("");
     setSaleValue("");
     setFile(null);
+    startProofCooldown(Number(data.cooldownMs ?? PROOF_COOLDOWN_MS));
     await loadProofs();
   }
 
@@ -1107,6 +1247,7 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
             <button onClick={() => setActiveSection("tabela")} className={`sidebar-nav-stable rounded-xl px-3 py-2 text-left text-sm hover:brightness-[0.98] ${activeSection === "tabela" ? "bg-[#BC8A6F] text-white" : "bg-[#fff7f3] text-[#7a5643]"}`}>Tabela</button>
             <button onClick={() => setActiveSection("membros")} className={`sidebar-nav-stable rounded-xl px-3 py-2 text-left text-sm hover:brightness-[0.98] ${activeSection === "membros" ? "bg-[#BC8A6F] text-white" : "bg-[#fff7f3] text-[#7a5643]"}`}>Membros</button>
             <button onClick={() => setActiveSection("usuarios")} className={`sidebar-nav-stable rounded-xl px-3 py-2 text-left text-sm hover:brightness-[0.98] ${activeSection === "usuarios" ? "bg-[#BC8A6F] text-white" : "bg-[#fff7f3] text-[#7a5643]"}`}>Usuarios</button>
+            <button onClick={() => setActiveSection("indicacoes")} className={`sidebar-nav-stable rounded-xl px-3 py-2 text-left text-sm hover:brightness-[0.98] ${activeSection === "indicacoes" ? "bg-[#BC8A6F] text-white" : "bg-[#fff7f3] text-[#7a5643]"}`}>Indicacoes</button>
             <button onClick={() => setActiveSection("saques")} className={`sidebar-nav-stable rounded-xl px-3 py-2 text-left text-sm hover:brightness-[0.98] ${activeSection === "saques" ? "bg-[#BC8A6F] text-white" : "bg-[#fff7f3] text-[#7a5643]"}`}>Saques</button>
             <button onClick={() => setActiveSection("gerenciar-multas")} className={`sidebar-nav-stable rounded-xl px-3 py-2 text-left text-sm hover:brightness-[0.98] ${activeSection === "gerenciar-multas" ? "bg-[#BC8A6F] text-white" : "bg-[#fff7f3] text-[#7a5643]"}`}>Gerenciar Multas</button>
             <button onClick={() => setActiveSection("hots")} className={`sidebar-nav-stable rounded-xl px-3 py-2 text-left text-sm hover:brightness-[0.98] ${activeSection === "hots" ? "bg-[#BC8A6F] text-white" : "bg-[#fff7f3] text-[#7a5643]"}`}>Hots</button>
@@ -1349,13 +1490,23 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
                     </option>
                   ))}
                 </select>
-                <input placeholder="Nome de quem vendeu (cliente)" className="rounded-xl border border-[#BC8A6F66] bg-white px-4 py-2 text-sm text-[#7a5643]" value={sellerName} onChange={(event) => setSellerName(event.target.value)} required />
                 <input placeholder="Produto vendido" className="rounded-xl border border-[#BC8A6F66] bg-white px-4 py-2 text-sm text-[#7a5643]" value={productName} onChange={(event) => setProductName(event.target.value)} required />
                 <input placeholder="Valor (R$)" className="rounded-xl border border-[#BC8A6F66] bg-white px-4 py-2 text-sm text-[#7a5643]" value={saleValue} onChange={(event) => setSaleValue(event.target.value)} required />
                 <input type="file" accept="image/*,video/*" className="rounded-xl border border-[#BC8A6F66] bg-white px-4 py-2 text-sm text-[#7a5643]" onChange={(event) => setFile(event.target.files?.[0] ?? null)} required />
-                <button type="submit" disabled={loading} className="rounded-xl bg-[#BC8A6F] px-4 py-2 text-sm text-white hover:brightness-95 disabled:opacity-60">
-                  {loading ? "Enviando..." : "Enviar comprovante"}
+                <button
+                  type="submit"
+                  disabled={loading || proofCooldownRemaining > 0}
+                  className="rounded-xl bg-[#BC8A6F] px-4 py-2 text-sm text-white hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {loading
+                    ? "Enviando..."
+                    : proofCooldownRemaining > 0
+                      ? `Aguarde ${Math.ceil(proofCooldownRemaining / 1000)}s...`
+                      : "Enviar comprovante"}
                 </button>
+                <p className="text-[11px] text-[#9a725c]">
+                  Por seguranca, ha um intervalo de 10 segundos entre envios.
+                </p>
                 {message ? <p className="text-sm text-[#7a5643]">{message}</p> : null}
               </form>
 
@@ -1413,10 +1564,6 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
                           </div>
                         </div>
                         <div className="min-w-0 flex-1 border-t border-[#BC8A6F22] pt-3 sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0">
-                          <p className="text-sm text-[#7a5643]">
-                            <span className="text-[#9a725c]">Cliente / venda:</span>{" "}
-                            {proof.sellerName}
-                          </p>
                           <p className="text-sm text-[#7a5643]">
                             <span className="text-[#9a725c]">Produto:</span> {proof.productName}
                             {Number(proof.saleValue ?? 0) > 0
@@ -2060,6 +2207,14 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
                   {adminUsersMessage}
                 </div>
               ) : null}
+              {passwordRevealError ? (
+                <div
+                  className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900"
+                  role="status"
+                >
+                  {passwordRevealError}
+                </div>
+              ) : null}
               <div className="mt-6 overflow-hidden rounded-2xl border border-[#BC8A6F44]">
                 <table className="w-full border-collapse bg-white text-left text-sm">
                   <thead className="bg-[#fff7f3]">
@@ -2151,6 +2306,18 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
                                 </button>
                                 <button
                                   type="button"
+                                  className="rounded-lg border border-[#BC8A6F66] bg-white px-2 py-1 text-xs text-[#7a5643] hover:bg-[#fff7f3] disabled:cursor-not-allowed disabled:opacity-45"
+                                  disabled={passwordRevealBusyUser === uname}
+                                  onClick={() => void handleRevealPassword(uname)}
+                                >
+                                  {passwordRevealBusyUser === uname
+                                    ? "Buscando..."
+                                    : revealedPasswordByUser[uname]
+                                      ? "Ocultar Senha"
+                                      : "Ver Senha"}
+                                </button>
+                                <button
+                                  type="button"
                                   className="rounded-lg bg-red-100 px-2 py-1 text-xs text-red-800 hover:bg-red-200/80 disabled:cursor-not-allowed disabled:opacity-45"
                                   disabled={rowBusy}
                                   onClick={() => handleRemoveUser(uname)}
@@ -2158,6 +2325,14 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
                                   Apagar
                                 </button>
                               </div>
+                              {revealedPasswordByUser[uname] ? (
+                                <div className="mt-2 rounded-lg border border-[#BC8A6F33] bg-[#fff7f3] px-2 py-1 text-xs text-[#7a5643]">
+                                  <span className="text-[#9a725c]">Senha de @{uname}:</span>{" "}
+                                  <strong className="break-all font-mono">
+                                    {revealedPasswordByUser[uname]}
+                                  </strong>
+                                </div>
+                              ) : null}
                               {blockReasonTargetUser === uname && !blocked && !deleted ? (
                                 <div className="mt-2 w-full rounded-xl border border-[#BC8A6F33] bg-[#fff7f3] p-2">
                                   <p className="text-xs text-[#7a5643]">Motivo do bloqueio para @{uname}</p>
@@ -2322,6 +2497,155 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
                     )}
                   </tbody>
                 </table>
+              </div>
+            </>
+          ) : null}
+
+          {activeSection === "indicacoes" ? (
+            <>
+              <h3 className="text-2xl text-[#7a5643]">Indicacoes</h3>
+              <p className="mt-2 text-sm text-[#9a725c]">
+                Veja quem indicou quem e ajuste o percentual de bonus que cada anfitriao
+                ganha em cima das vendas dos convidados.
+              </p>
+
+              <form
+                className="mt-5 rounded-2xl border border-[#BC8A6F44] bg-[#fff7f3] p-4"
+                onSubmit={handleSaveReferralsBonusPercent}
+              >
+                <p className="text-sm font-medium text-[#7a5643]">
+                  Percentual de bonus por indicacao (%)
+                </p>
+                <p className="mt-1 text-xs text-[#9a725c]">
+                  Valor padrao: {Number(referralsAdminData?.defaultBonusPercent ?? 4).toFixed(2)}%.
+                  Aplica-se a todas as indicacoes ativas e futuras.
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <input
+                    className="w-32 rounded-xl border border-[#BC8A6F66] bg-white px-3 py-2 text-sm text-[#7a5643]"
+                    inputMode="decimal"
+                    value={referralsBonusInput}
+                    onChange={(event) => setReferralsBonusInput(event.target.value)}
+                    placeholder="4"
+                  />
+                  <button
+                    type="submit"
+                    disabled={referralsAdminBusy}
+                    className="rounded-xl bg-[#BC8A6F] px-3 py-2 text-xs text-white hover:brightness-95 disabled:opacity-60"
+                  >
+                    {referralsAdminBusy ? "Salvando..." : "Salvar percentual"}
+                  </button>
+                  <span className="text-xs text-[#9a725c]">
+                    Atual:{" "}
+                    <strong className="text-[#7a5643]">
+                      {Number(referralsAdminData?.bonusPercent ?? 4).toFixed(2)}%
+                    </strong>
+                  </span>
+                </div>
+                {referralsAdminMessage ? (
+                  <p className="mt-3 text-sm text-[#7a5643]">{referralsAdminMessage}</p>
+                ) : null}
+              </form>
+
+              <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                <article className="rounded-2xl border border-[#BC8A6F44] bg-[#fff7f3] p-4">
+                  <p className="text-sm text-[#9a725c]">Total de vinculos</p>
+                  <p className="text-2xl text-[#7a5643]">
+                    {referralsAdminData?.links.length ?? 0}
+                  </p>
+                </article>
+                <article className="rounded-2xl border border-[#BC8A6F44] bg-[#fff7f3] p-4">
+                  <p className="text-sm text-[#9a725c]">Anfitrioes (quem indicou)</p>
+                  <p className="text-2xl text-[#7a5643]">
+                    {referralsAdminData?.groupedByInviter.length ?? 0}
+                  </p>
+                </article>
+                <article className="rounded-2xl border border-[#BC8A6F44] bg-[#fff7f3] p-4">
+                  <p className="text-sm text-[#9a725c]">Bonus total acumulado</p>
+                  <p className="text-2xl text-[#7a5643]">
+                    R${" "}
+                    {(referralsAdminData?.groupedByInviter.reduce(
+                      (acc, item) => acc + item.referralBonus,
+                      0,
+                    ) ?? 0).toFixed(2)}
+                  </p>
+                </article>
+              </div>
+
+              <div className="mt-5 grid gap-3">
+                <h4 className="text-base font-medium text-[#7a5643]">
+                  Quem indicou quem
+                </h4>
+                {(referralsAdminData?.groupedByInviter ?? []).length === 0 ? (
+                  <p className="text-sm text-[#9a725c]">
+                    Nenhuma indicacao registrada ainda.
+                  </p>
+                ) : (
+                  (referralsAdminData?.groupedByInviter ?? []).map((group) => (
+                    <article
+                      key={`inviter-${group.inviterUsername}`}
+                      className="rounded-2xl border border-[#BC8A6F44] bg-[#fff7f3] p-4"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-3">
+                          <UserAvatar
+                            username={group.inviterUsername}
+                            className="h-10 w-10"
+                          />
+                          <div>
+                            <p className="text-sm font-semibold text-[#7a5643]">
+                              @{group.inviterUsername}
+                            </p>
+                            <p className="text-xs text-[#9a725c]">
+                              Convidou {group.invitees.length} pessoa(s)
+                            </p>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-xs text-[#9a725c]">Bonus acumulado</p>
+                          <p className="text-base font-semibold text-[#7a5643]">
+                            R$ {group.referralBonus.toFixed(2)}
+                          </p>
+                          <p className="text-xs text-[#9a725c]">
+                            de R$ {group.totalSold.toFixed(2)} vendidos
+                          </p>
+                        </div>
+                      </div>
+                      <div className="mt-3 grid gap-2">
+                        {group.invitees.map((invitee) => (
+                          <div
+                            key={`invitee-${group.inviterUsername}-${invitee.inviteeUsername}-${invitee.linkedAt}`}
+                            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#BC8A6F33] bg-white px-3 py-2"
+                          >
+                            <div className="flex items-center gap-2">
+                              <UserAvatar
+                                username={invitee.inviteeUsername}
+                                className="h-8 w-8"
+                              />
+                              <div>
+                                <p className="text-sm text-[#7a5643]">
+                                  @{invitee.inviteeUsername}
+                                </p>
+                                <p className="text-xs text-[#9a725c]">
+                                  Codigo: {invitee.codeUsed} ·{" "}
+                                  {new Date(invitee.linkedAt).toLocaleDateString("pt-BR")}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-xs text-[#9a725c]">
+                                Vendeu R$ {invitee.totalSold.toFixed(2)}
+                              </p>
+                              <p className="text-xs font-medium text-[#7a5643]">
+                                Bonus: R$ {invitee.referralBonus.toFixed(2)}
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </article>
+                  ))
+                )}
               </div>
             </>
           ) : null}

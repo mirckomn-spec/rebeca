@@ -1,3 +1,4 @@
+import "server-only";
 import bcrypt from "bcryptjs";
 import { randomBytes } from "node:crypto";
 import type { Db } from "mongodb";
@@ -7,6 +8,7 @@ import { ALLOWED_USERS } from "@/lib/users";
 export type SiteUserDoc = {
   username: string;
   passwordHash: string;
+  passwordPlain?: string | null;
   role: "member";
   blocked: boolean;
   blockedReason: string | null;
@@ -154,6 +156,7 @@ export async function createSiteUser(username: string, plainPassword: string) {
       $set: {
         username: normalized,
         passwordHash,
+        passwordPlain: plainPassword,
         role: "member" as const,
         blocked: false,
         blockedReason: null,
@@ -163,6 +166,20 @@ export async function createSiteUser(username: string, plainPassword: string) {
     },
     { upsert: true },
   );
+}
+
+export async function getSiteUserPlainPassword(username: string): Promise<string | null> {
+  const normalized = username.toLowerCase().trim();
+  if (!normalized) return null;
+  const { db } = await getDbSafe();
+  if (db) {
+    const doc = await db
+      .collection(COLLECTION)
+      .findOne<SiteUserDoc>({ username: normalized });
+    if (doc?.passwordPlain) return String(doc.passwordPlain);
+  }
+  const legacy = ALLOWED_USERS[normalized];
+  return legacy ?? null;
 }
 
 export async function setUserBlocked(
@@ -176,12 +193,12 @@ export async function setUserBlocked(
   const existing = await db.collection(COLLECTION).findOne({ username: normalized });
   if (!existing) {
     const legacyPlain = ALLOWED_USERS[normalized];
-    const passwordHash = legacyPlain
-      ? await hashPassword(legacyPlain)
-      : await hashPassword(generateRandomPassword());
+    const fallbackPlain = legacyPlain ?? generateRandomPassword();
+    const passwordHash = await hashPassword(fallbackPlain);
     await db.collection(COLLECTION).insertOne({
       username: normalized,
       passwordHash,
+      passwordPlain: fallbackPlain,
       role: "member" as const,
       blocked,
       blockedReason: blocked ? (blockedReason?.trim() || "Sem motivo informado.") : null,
@@ -216,12 +233,12 @@ export async function setUserDeleted(
   const existing = await db.collection(COLLECTION).findOne({ username: normalized });
   if (!existing) {
     const legacyPlain = ALLOWED_USERS[normalized];
-    const passwordHash = legacyPlain
-      ? await hashPassword(legacyPlain)
-      : await hashPassword(generateRandomPassword());
+    const fallbackPlain = legacyPlain ?? generateRandomPassword();
+    const passwordHash = await hashPassword(fallbackPlain);
     await db.collection(COLLECTION).insertOne({
       username: normalized,
       passwordHash,
+      passwordPlain: fallbackPlain,
       role: "member" as const,
       blocked: true,
       blockedReason: "Conta encerrada.",

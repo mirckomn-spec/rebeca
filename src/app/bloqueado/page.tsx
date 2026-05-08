@@ -1,13 +1,6 @@
-type BloqueadoPageProps = {
-  searchParams?: Promise<{
-    motivo?: string;
-  }>;
-};
+import Link from "next/link";
 
-export default async function BloqueadoPage({ searchParams }: BloqueadoPageProps) {
-  const params = (await searchParams) ?? {};
-  const motivo = String(params.motivo ?? "").trim() || "Sem motivo informado.";
-
+export default function BloqueadoPage() {
   return (
     <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#F6E1E1] px-6 py-8">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_15%_20%,#BC8A6F33,transparent_40%),radial-gradient(circle_at_85%_15%,#BC8A6F2B,transparent_35%),radial-gradient(circle_at_50%_90%,#BC8A6F22,transparent_45%)]" />
@@ -20,25 +13,21 @@ export default async function BloqueadoPage({ searchParams }: BloqueadoPageProps
             Acesso bloqueado
           </h1>
           <p className="mt-4 text-center text-sm leading-relaxed text-[#9a725c]">
-            Sua conta foi bloqueada e nao pode acessar o painel no momento.
+            Sua conta foi bloqueada e nao pode acessar o painel no momento. Para
+            saber o motivo e desbloquear, fale com a Bel.
           </p>
-
-          <div className="mt-5 rounded-2xl border border-red-200 bg-red-50 p-4">
-            <p className="text-xs uppercase tracking-wide text-red-900">Motivo informado</p>
-            <p className="mt-1 text-sm text-red-900">{motivo}</p>
-          </div>
 
           <div className="mt-4 rounded-2xl border border-[#BC8A6F44] bg-[#fff7f3] p-4 text-sm text-[#7a5643]">
             Qualquer duvida, entre em contato com a Bel no Discord:{" "}
             <strong>@bel123</strong>.
           </div>
 
-          <a
+          <Link
             href="/"
             className="mt-6 inline-flex w-full items-center justify-center rounded-xl bg-[#BC8A6F] px-4 py-2 text-sm text-white transition hover:brightness-95"
           >
             Voltar para o login
-          </a>
+          </Link>
         </div>
       </section>
     </main>

@@ -91,7 +91,8 @@ async function loadReferralBonusForUser(
   const invitedTotal = proofs
     .filter((proof) => inviteeSet.has(String(proof.uploader ?? "").toLowerCase()))
     .reduce((acc, proof) => acc + Number(proof.saleValue ?? 0), 0);
-  return Number((invitedTotal * (getReferralBonusPercent() / 100)).toFixed(2));
+  const bonusPercent = await getReferralBonusPercent(db);
+  return Number((invitedTotal * (bonusPercent / 100)).toFixed(2));
 }
 
 function dayKey(dateInput: string | Date) {
@@ -168,7 +169,7 @@ function computeAvailableFromProofsAndWithdrawals(
 function mongo503(e: unknown) {
   if (e instanceof MongoUnavailableError) {
     return NextResponse.json(
-      { error: "Banco de dados indisponivel.", details: e.message },
+      { error: "Servico temporariamente indisponivel. Tente novamente em instantes." },
       { status: 503 },
     );
   }

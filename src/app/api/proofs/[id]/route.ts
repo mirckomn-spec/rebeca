@@ -7,7 +7,7 @@ import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
 function mongo503(e: unknown) {
   if (e instanceof MongoUnavailableError) {
     return NextResponse.json(
-      { error: "Banco de dados indisponivel.", details: e.message },
+      { error: "Servico temporariamente indisponivel. Tente novamente em instantes." },
       { status: 503 },
     );
   }
@@ -149,7 +149,7 @@ export async function PATCH(
       const discordUploadsChannelId = process.env.DISCORD_UPLOADS_CHANNEL_ID;
       if (!discordToken || !discordUploadsChannelId) {
         return NextResponse.json(
-          { error: "Discord nao configurado para substituir arquivo." },
+          { error: "Servico de armazenamento indisponivel no momento." },
           { status: 503 },
         );
       }

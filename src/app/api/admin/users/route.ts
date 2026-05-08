@@ -13,7 +13,7 @@ import { listMemberUsernames } from "@/lib/members";
 function mongo503(error: unknown) {
   if (error instanceof MongoUnavailableError) {
     return NextResponse.json(
-      { error: "Banco de dados indisponivel.", details: error.message },
+      { error: "Servico temporariamente indisponivel. Tente novamente em instantes." },
       { status: 503 },
     );
   }

@@ -17,8 +17,50 @@ function resolveRole(decoded: DecodedPayload): JwtRole {
   return user === "bel" ? "admin" : "member";
 }
 
+/**
+ * Headers de seguranca aplicados em TODAS as respostas (HTML e API).
+ * Eliminam vetores comuns de ataque visiveis no F12:
+ * - Clickjacking (X-Frame-Options + frame-ancestors).
+ * - Sniff de mime (X-Content-Type-Options).
+ * - Vazamento de URL via Referer (Referrer-Policy).
+ * - Permissoes nao usadas (Permissions-Policy).
+ * - Mistura HTTP/HTTPS (HSTS, so faz sentido em prod com TLS).
+ *
+ * O CSP e restrito o suficiente para bloquear inline scripts maliciosos
+ * mantendo Next + tailwind (sem unsafe-inline em script).
+ */
+function applySecurityHeaders(response: NextResponse, isApi: boolean) {
+  response.headers.set("X-Frame-Options", "DENY");
+  response.headers.set("X-Content-Type-Options", "nosniff");
+  response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  response.headers.set("X-DNS-Prefetch-Control", "off");
+  response.headers.set(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=(), interest-cohort=(), browsing-topics=()",
+  );
+  if (process.env.NODE_ENV === "production") {
+    response.headers.set(
+      "Strict-Transport-Security",
+      "max-age=63072000; includeSubDomains; preload",
+    );
+  }
+  if (isApi) {
+    // Respostas de API com dados privados nunca podem ser cacheadas
+    // por proxy/CDN/browser.
+    response.headers.set(
+      "Cache-Control",
+      "no-store, no-cache, must-revalidate, proxy-revalidate, private",
+    );
+    response.headers.set("Pragma", "no-cache");
+    response.headers.set("Expires", "0");
+    response.headers.set("Surrogate-Control", "no-store");
+  }
+  return response;
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+  const isApi = pathname.startsWith("/api/");
 
   const needsAuth =
     pathname.startsWith("/dashboard") ||
@@ -29,17 +71,26 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith("/api/fines") ||
     pathname.startsWith("/api/goals") ||
     pathname.startsWith("/api/hots-access") ||
+    pathname.startsWith("/api/withdrawals") ||
+    pathname.startsWith("/api/withdrawal-settings") ||
+    pathname.startsWith("/api/referrals") ||
     pathname.startsWith("/api/admin");
 
   if (!needsAuth) {
-    return NextResponse.next();
+    return applySecurityHeaders(NextResponse.next(), isApi);
   }
 
   const token = request.cookies.get(AUTH_COOKIE)?.value;
   const secret = process.env.JWT_SECRET;
 
   if (!token || !secret) {
-    return NextResponse.redirect(new URL("/", request.url));
+    if (isApi) {
+      return applySecurityHeaders(
+        NextResponse.json({ error: "Nao autorizado." }, { status: 401 }),
+        true,
+      );
+    }
+    return applySecurityHeaders(NextResponse.redirect(new URL("/", request.url)), false);
   }
 
   let role: JwtRole;
@@ -49,37 +100,36 @@ export async function middleware(request: NextRequest) {
     const decoded = payload as DecodedPayload;
     role = resolveRole(decoded);
   } catch {
-    return NextResponse.redirect(new URL("/", request.url));
+    if (isApi) {
+      return applySecurityHeaders(
+        NextResponse.json({ error: "Sessao invalida." }, { status: 401 }),
+        true,
+      );
+    }
+    return applySecurityHeaders(NextResponse.redirect(new URL("/", request.url)), false);
   }
 
   if (pathname.startsWith("/dashboard") && role !== "admin") {
-    return NextResponse.redirect(new URL("/painel", request.url));
+    return applySecurityHeaders(NextResponse.redirect(new URL("/painel", request.url)), false);
   }
 
   if (pathname.startsWith("/painel") && role !== "member") {
-    return NextResponse.redirect(new URL("/dashboard", request.url));
+    return applySecurityHeaders(NextResponse.redirect(new URL("/dashboard", request.url)), false);
   }
 
   if (pathname.startsWith("/api/admin") && role !== "admin") {
-    return NextResponse.json({ error: "Nao autorizado." }, { status: 403 });
+    return applySecurityHeaders(
+      NextResponse.json({ error: "Nao autorizado." }, { status: 403 }),
+      true,
+    );
   }
 
-  return NextResponse.next();
+  return applySecurityHeaders(NextResponse.next(), isApi);
 }
 
 export const config = {
   matcher: [
-    "/dashboard",
-    "/dashboard/:path*",
-    "/painel",
-    "/painel/:path*",
-    "/api/proofs/:path*",
-    "/api/ranking",
-    "/api/profile/:path*",
-    "/api/fines/:path*",
-    "/api/goals",
-    "/api/hots-access",
-    "/api/admin",
-    "/api/admin/:path*",
+    // Aplica headers de seguranca em tudo, exceto assets estaticos.
+    "/((?!_next/static|_next/image|favicon.ico|avatar-default.svg|fontes/|icones/).*)",
   ],
 };

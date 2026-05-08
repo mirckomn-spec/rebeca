@@ -1,3 +1,4 @@
+import "server-only";
 import { getDbSafe } from "@/lib/mongodb";
 import { getPermanentlyRemovedUsernameSet } from "@/lib/site-users";
 import { ALLOWED_USERS } from "@/lib/users";

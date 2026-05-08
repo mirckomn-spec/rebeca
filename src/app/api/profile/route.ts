@@ -6,7 +6,7 @@ import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
 function mongo503(e: unknown) {
   if (e instanceof MongoUnavailableError) {
     return NextResponse.json(
-      { error: "Banco de dados indisponivel.", details: e.message },
+      { error: "Servico temporariamente indisponivel. Tente novamente em instantes." },
       { status: 503 },
     );
   }
@@ -61,10 +61,7 @@ export async function POST(request: Request) {
   const discordUploadsChannelId = process.env.DISCORD_UPLOADS_CHANNEL_ID;
   if (!discordToken || !discordUploadsChannelId) {
     return NextResponse.json(
-      {
-        error:
-          "Discord nao configurado. Defina DISCORD_BOT_TOKEN e DISCORD_UPLOADS_CHANNEL_ID no .env.local.",
-      },
+      { error: "Servico de armazenamento indisponivel no momento." },
       { status: 503 },
     );
   }
@@ -80,9 +77,11 @@ export async function POST(request: Request) {
       content: `Novo avatar enviado por ${session.username}`,
     });
     discordAvatarUrl = uploadResult.url;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Falha no upload para o Discord.";
-    return NextResponse.json({ error: message }, { status: 502 });
+  } catch {
+    return NextResponse.json(
+      { error: "Falha ao enviar a foto. Tente novamente." },
+      { status: 502 },
+    );
   }
 
   try {

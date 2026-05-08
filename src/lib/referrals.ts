@@ -1,8 +1,10 @@
+import "server-only";
 import type { Db } from "mongodb";
 
 const REFERRAL_CODES_COLLECTION = "referral_codes";
 const REFERRALS_COLLECTION = "referrals";
-const REFERRAL_BONUS_PERCENT = 4;
+const REFERRAL_SETTINGS_KEY = "referrals";
+const DEFAULT_REFERRAL_BONUS_PERCENT = 4;
 
 type ReferralCodeDoc = {
   username: string;
@@ -108,6 +110,45 @@ export async function getReferralLinkForInvitee(db: Db, inviteeUsername: string)
   };
 }
 
-export function getReferralBonusPercent() {
-  return REFERRAL_BONUS_PERCENT;
+export function getDefaultReferralBonusPercent() {
+  return DEFAULT_REFERRAL_BONUS_PERCENT;
+}
+
+export async function getReferralBonusPercent(db: Db): Promise<number> {
+  const row = (await db
+    .collection("settings")
+    .findOne({ key: REFERRAL_SETTINGS_KEY })) as { bonusPercent?: number } | null;
+  const value = Number(row?.bonusPercent);
+  if (!Number.isFinite(value) || value < 0) {
+    return DEFAULT_REFERRAL_BONUS_PERCENT;
+  }
+  return Math.min(100, value);
+}
+
+export async function setReferralBonusPercent(db: Db, bonusPercent: number): Promise<number> {
+  const value = Number(bonusPercent);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error("Percentual invalido. Use um numero entre 0 e 100.");
+  }
+  const normalized = Number(Math.min(100, value).toFixed(4));
+  await db.collection("settings").updateOne(
+    { key: REFERRAL_SETTINGS_KEY },
+    { $set: { key: REFERRAL_SETTINGS_KEY, bonusPercent: normalized, updatedAt: new Date() } },
+    { upsert: true },
+  );
+  return normalized;
+}
+
+export async function getAllReferralLinks(db: Db) {
+  const rows = await db
+    .collection(REFERRALS_COLLECTION)
+    .find<ReferralLinkDoc>({})
+    .sort({ linkedAt: -1 })
+    .toArray();
+  return rows.map((row) => ({
+    inviterUsername: String(row.inviterUsername ?? "").toLowerCase(),
+    inviteeUsername: String(row.inviteeUsername ?? "").toLowerCase(),
+    codeUsed: String(row.codeUsed ?? "").toUpperCase(),
+    linkedAt: new Date(row.linkedAt ?? new Date()).toISOString(),
+  }));
 }

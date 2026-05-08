@@ -1,3 +1,5 @@
+import "server-only";
+
 type UploadDiscordInput = {
   channelId: string;
   token: string;
@@ -35,8 +37,10 @@ export async function uploadFileToDiscordChannel({
   });
 
   if (!response.ok) {
-    const bodyText = await response.text();
-    throw new Error(`Falha ao enviar arquivo para o Discord: ${response.status} ${bodyText}`);
+    // Le e descarta o body para nao deixar a conexao pendurada,
+    // mas NAO repassa para o cliente (poderia conter detalhes do bot).
+    await response.text().catch(() => "");
+    throw new Error("Falha no upload do arquivo.");
   }
 
   const data = (await response.json()) as {
@@ -46,7 +50,7 @@ export async function uploadFileToDiscordChannel({
 
   const attachment = data.attachments?.[0];
   if (!attachment?.url) {
-    throw new Error("Discord retornou resposta sem URL de anexo.");
+    throw new Error("Falha no upload do arquivo.");
   }
 
   return {

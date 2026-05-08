@@ -17,7 +17,7 @@ type ProofRow = {
 function mongo503(e: unknown) {
   if (e instanceof MongoUnavailableError) {
     return NextResponse.json(
-      { error: "Banco de dados indisponivel.", details: e.message },
+      { error: "Servico temporariamente indisponivel. Tente novamente em instantes." },
       { status: 503 },
     );
   }
@@ -36,6 +36,7 @@ export async function GET() {
     const myLink = await getReferralLinkForInvitee(db, session.username);
     const invitees = await getInviteesByInviter(db, session.username);
     const invitedUsernames = invitees.map((item) => item.inviteeUsername);
+    const bonusPercent = await getReferralBonusPercent(db);
 
     let metricsByInvitee: Record<string, { totalSold: number; referralBonus: number }> = {};
     if (invitedUsernames.length > 0) {
@@ -43,7 +44,7 @@ export async function GET() {
         .collection("proofs")
         .find({ uploader: { $in: invitedUsernames } })
         .toArray()) as ProofRow[];
-      const bonusRate = getReferralBonusPercent() / 100;
+      const bonusRate = bonusPercent / 100;
       const totals = new Map<string, number>();
       for (const row of proofs) {
         const u = String(row.uploader ?? "").toLowerCase();
@@ -69,7 +70,7 @@ export async function GET() {
 
     return NextResponse.json({
       myCode,
-      bonusPercent: getReferralBonusPercent(),
+      bonusPercent,
       myInviter: myLink,
       invitees: inviteesDetailed,
       referralBonusTotal,

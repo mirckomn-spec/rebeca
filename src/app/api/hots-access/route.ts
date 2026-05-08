@@ -1,6 +1,6 @@
-import { NextResponse } from "next/server";
 import { getSessionFromCookie } from "@/lib/auth";
 import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
+import { jsonNoStore } from "@/lib/http";
 
 type ProfileKey = "loira" | "morena";
 type SocialKey = "twitter" | "facebook" | "tiktok" | "instagram" | "discord";
@@ -88,8 +88,8 @@ function removeAccess(
 
 function mongo503(e: unknown) {
   if (e instanceof MongoUnavailableError) {
-    return NextResponse.json(
-      { error: "Banco de dados indisponivel.", details: e.message },
+    return jsonNoStore(
+      { error: "Servico temporariamente indisponivel. Tente novamente em instantes." },
       { status: 503 },
     );
   }
@@ -99,7 +99,7 @@ function mongo503(e: unknown) {
 export async function GET(request: Request) {
   const session = await getSessionFromCookie();
   if (!session) {
-    return NextResponse.json({ error: "Nao autorizado." }, { status: 401 });
+    return jsonNoStore({ error: "Nao autorizado." }, { status: 401 });
   }
 
   try {
@@ -127,7 +127,7 @@ export async function GET(request: Request) {
     const credentialsByProfile = profileSettings?.credentialsByProfile ?? {};
 
     if (session.role === "admin" && wantsAll) {
-      return NextResponse.json({
+      return jsonNoStore({
         access: merged,
         profilesByKey: credentialsByProfile,
       });
@@ -136,13 +136,25 @@ export async function GET(request: Request) {
     const myAccessList = merged.filter((item) => item.username === session.username.toLowerCase());
     const profileAccessList = myAccessList.filter((item) => item.scope === "profile");
     const socialAccessList = myAccessList.filter((item) => item.scope === "social");
-    return NextResponse.json(
+    return jsonNoStore(
       profileAccessList.map((item) => {
         const profileData = credentialsByProfile[item.profileKey] ?? null;
         const grantedSocials = socialAccessList
           .filter((socialItem) => socialItem.profileKey === item.profileKey)
           .map((socialItem) => socialItem.socialKey)
           .filter((social): social is SocialKey => Boolean(social));
+        // CRITICO: so devolvemos credenciais das redes que esse usuario
+        // tem liberado. Antes vazavamos todas as redes do perfil mesmo
+        // sem o usuario ter acesso a elas.
+        const grantedSet = new Set(grantedSocials);
+        const filteredSocialCredentials: Partial<Record<SocialKey, SocialCredential>> = {};
+        for (const [key, value] of Object.entries(
+          profileData?.socialCredentialsByKey ?? {},
+        )) {
+          if (value && grantedSet.has(key as SocialKey)) {
+            filteredSocialCredentials[key as SocialKey] = value;
+          }
+        }
         return {
           ...item,
           credentials: profileData
@@ -150,7 +162,7 @@ export async function GET(request: Request) {
             : null,
           profileImageUrl: profileData?.imageUrl ?? null,
           grantedSocials,
-          socialCredentialsByKey: profileData?.socialCredentialsByKey ?? {},
+          socialCredentialsByKey: filteredSocialCredentials,
         };
       }),
     );
@@ -164,7 +176,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const session = await getSessionFromCookie();
   if (!session || session.role !== "admin") {
-    return NextResponse.json({ error: "Nao autorizado." }, { status: 401 });
+    return jsonNoStore({ error: "Nao autorizado." }, { status: 401 });
   }
 
   const body = (await request.json().catch(() => null)) as
@@ -192,7 +204,7 @@ export async function POST(request: Request) {
       const password = String(body?.password ?? "").trim();
       const imageUrl = String(body?.imageUrl ?? "").trim();
       if (!login || !password) {
-        return NextResponse.json(
+        return jsonNoStore(
           { error: "Informe login e senha para salvar as credenciais." },
           { status: 400 },
         );
@@ -245,14 +257,14 @@ export async function POST(request: Request) {
         },
         { upsert: true },
       );
-      return NextResponse.json({ ok: true });
+      return jsonNoStore({ ok: true });
     }
 
     const normalizedUsername = String(body?.username ?? "").toLowerCase().trim();
     const normalizedSocial = body?.socialKey ? normalizeSocialKey(body.socialKey) : undefined;
 
     if (!normalizedUsername || normalizedUsername === "bel") {
-      return NextResponse.json({ error: "Usuario invalido." }, { status: 400 });
+      return jsonNoStore({ error: "Usuario invalido." }, { status: 400 });
     }
 
     const item: AccessItem = {
@@ -291,7 +303,7 @@ export async function POST(request: Request) {
       );
     }
 
-    return NextResponse.json({ ok: true });
+    return jsonNoStore({ ok: true });
   } catch (e) {
     const r = mongo503(e);
     if (r) return r;
@@ -302,7 +314,7 @@ export async function POST(request: Request) {
 export async function DELETE(request: Request) {
   const session = await getSessionFromCookie();
   if (!session || session.role !== "admin") {
-    return NextResponse.json({ error: "Nao autorizado." }, { status: 401 });
+    return jsonNoStore({ error: "Nao autorizado." }, { status: 401 });
   }
 
   const body = (await request.json().catch(() => null)) as
@@ -318,7 +330,7 @@ export async function DELETE(request: Request) {
   const normalizedScope = body?.scope === "social" ? "social" : "profile";
   const normalizedSocial = normalizeSocialKey(body?.socialKey);
   if (!normalizedUsername || normalizedUsername === "bel") {
-    return NextResponse.json({ error: "Usuario invalido." }, { status: 400 });
+    return jsonNoStore({ error: "Usuario invalido." }, { status: 400 });
   }
 
   try {
@@ -356,7 +368,7 @@ export async function DELETE(request: Request) {
       );
     }
 
-    return NextResponse.json({ ok: true });
+    return jsonNoStore({ ok: true });
   } catch (e) {
     const r = mongo503(e);
     if (r) return r;

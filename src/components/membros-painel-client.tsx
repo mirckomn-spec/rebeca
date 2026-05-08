@@ -1,8 +1,10 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { UserAvatar } from "@/components/user-avatar";
+
+const PROOF_COOLDOWN_MS = 10_000;
 
 type Proof = {
   id: string;
@@ -264,6 +266,28 @@ export default function MembrosPainelClient({
   const [explanationTopic, setExplanationTopic] = useState<"site" | "vendas">("site");
   const [hotsAccess, setHotsAccess] = useState<UserHotsAccessItem[]>([]);
   const [openedHotProfile, setOpenedHotProfile] = useState<"loira" | "morena" | null>(null);
+  const [proofCooldownRemaining, setProofCooldownRemaining] = useState(0);
+  const proofCooldownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (proofCooldownTimerRef.current) clearInterval(proofCooldownTimerRef.current);
+    };
+  }, []);
+
+  function startProofCooldown(durationMs: number) {
+    if (proofCooldownTimerRef.current) clearInterval(proofCooldownTimerRef.current);
+    const endsAt = Date.now() + durationMs;
+    setProofCooldownRemaining(durationMs);
+    proofCooldownTimerRef.current = setInterval(() => {
+      const remaining = Math.max(0, endsAt - Date.now());
+      setProofCooldownRemaining(remaining);
+      if (remaining <= 0 && proofCooldownTimerRef.current) {
+        clearInterval(proofCooldownTimerRef.current);
+        proofCooldownTimerRef.current = null;
+      }
+    }, 100);
+  }
 
   async function loadRanking() {
     const response = await fetch("/api/ranking");
@@ -355,6 +379,7 @@ export default function MembrosPainelClient({
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (loading || proofCooldownRemaining > 0) return;
     if (!productName.trim()) {
       setMessage("Informe o nome do produto vendido.");
       return;
@@ -380,10 +405,19 @@ export default function MembrosPainelClient({
       method: "POST",
       body: formData,
     });
-    const data = await response.json();
+    const data = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      retryAfterMs?: number;
+      penaltyPercentApplied?: number;
+      cooldownMs?: number;
+    };
     setLoading(false);
 
     if (!response.ok) {
+      if (response.status === 429) {
+        const ms = Number(data.retryAfterMs ?? PROOF_COOLDOWN_MS);
+        startProofCooldown(Number.isFinite(ms) && ms > 0 ? ms : PROOF_COOLDOWN_MS);
+      }
       setMessage(data.error ?? "Falha ao enviar comprovante.");
       return;
     }
@@ -397,6 +431,7 @@ export default function MembrosPainelClient({
     setProductName("");
     setSaleValue("");
     setFile(null);
+    startProofCooldown(Number(data?.cooldownMs ?? PROOF_COOLDOWN_MS));
     await loadMyProofs();
     await Promise.all([loadRanking(), loadGoals(), loadWithdrawals()]);
   }
@@ -955,11 +990,18 @@ export default function MembrosPainelClient({
                 </label>
                 <button
                   type="submit"
-                  disabled={loading}
-                  className="rounded-xl bg-[#BC8A6F] px-4 py-2 text-sm text-white hover:brightness-95 disabled:opacity-60"
+                  disabled={loading || proofCooldownRemaining > 0}
+                  className="rounded-xl bg-[#BC8A6F] px-4 py-2 text-sm text-white hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {loading ? "Enviando..." : "Enviar comprovante"}
+                  {loading
+                    ? "Enviando..."
+                    : proofCooldownRemaining > 0
+                      ? `Aguarde ${Math.ceil(proofCooldownRemaining / 1000)}s...`
+                      : "Enviar comprovante"}
                 </button>
+                <p className="text-[11px] text-[#9a725c]">
+                  Por seguranca, ha um intervalo de 10 segundos entre envios de comprovante.
+                </p>
                 {message ? <p className="text-sm text-[#7a5643]">{message}</p> : null}
               </form>
 

@@ -1,3 +1,4 @@
+import "server-only";
 import type { UserRole } from "./auth";
 
 export const ALLOWED_USERS: Record<string, string> = {

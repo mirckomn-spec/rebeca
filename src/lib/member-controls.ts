@@ -1,3 +1,4 @@
+import "server-only";
 import { getDbRequired } from "@/lib/mongodb";
 
 export type MemberControlDoc = {

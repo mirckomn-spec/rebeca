@@ -22,7 +22,20 @@ const poppinsExtraBold = localFont({
 
 export const metadata: Metadata = {
   title: "Hots",
-  description: "Area privada de comprovantes de vendas.",
+  description: "Area privada.",
+  robots: {
+    index: false,
+    follow: false,
+    nocache: true,
+    googleBot: {
+      index: false,
+      follow: false,
+    },
+  },
+  referrer: "strict-origin-when-cross-origin",
+  applicationName: undefined,
+  generator: undefined,
+  formatDetection: { telephone: false, email: false, address: false },
 };
 
 export default function RootLayout({
