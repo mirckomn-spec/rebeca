@@ -3,11 +3,13 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "mongodb";
 import { getSessionFromCookie } from "@/lib/auth";
 import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
-import { getAllMemberControls, resolveCommissionPercents } from "@/lib/member-controls";
-import { getInviteesByInviter, getReferralBonusPercent } from "@/lib/referrals";
+import { getAllMemberControls } from "@/lib/member-controls";
+import {
+  computeAvailableFromProofsAndWithdrawals,
+  loadReferralBonusForUser,
+} from "@/lib/wallet";
 
 const DEFAULT_MIN_WITHDRAW = 200;
-const DAILY_TARGET = 150;
 
 type ProofDoc = {
   uploader?: string;
@@ -78,92 +80,6 @@ async function loadWithdrawals(db: Db): Promise<WithdrawalDoc[]> {
       reviewedAt: toIsoStringIfDate((item as unknown as { reviewedAt?: unknown }).reviewedAt),
     }),
   );
-}
-
-async function loadReferralBonusForUser(
-  db: Db,
-  username: string,
-  proofs: ProofDoc[],
-): Promise<number> {
-  const invitees = await getInviteesByInviter(db, username);
-  if (invitees.length === 0) return 0;
-  const inviteeSet = new Set(invitees.map((i) => i.inviteeUsername));
-  const invitedTotal = proofs
-    .filter((proof) => inviteeSet.has(String(proof.uploader ?? "").toLowerCase()))
-    .reduce((acc, proof) => acc + Number(proof.saleValue ?? 0), 0);
-  const bonusPercent = await getReferralBonusPercent(db);
-  return Number((invitedTotal * (bonusPercent / 100)).toFixed(2));
-}
-
-function dayKey(dateInput: string | Date) {
-  return new Date(dateInput).toISOString().slice(0, 10);
-}
-
-function computeTodayCommissionPercentForUser(
-  username: string,
-  proofs: ProofDoc[],
-  options?: {
-    globalCommissionPercentOverride?: number | null;
-    goalReachedCommissionPercentOverride?: number | null;
-    legacyCommissionPercentOverride?: number | null;
-  },
-) {
-  const commissions = resolveCommissionPercents({
-    commissionPercentOverride: options?.legacyCommissionPercentOverride ?? null,
-    globalCommissionPercentOverride: options?.globalCommissionPercentOverride ?? null,
-    goalReachedCommissionPercentOverride: options?.goalReachedCommissionPercentOverride ?? null,
-  });
-  const today = new Date().toISOString().slice(0, 10);
-  const todayTotal = proofs
-    .filter((proof) => String(proof.uploader ?? "").toLowerCase() === username)
-    .filter((proof) => dayKey(proof.createdAt) === today)
-    .reduce((acc, proof) => acc + Number(proof.saleValue ?? 0), 0);
-  return todayTotal >= DAILY_TARGET ? commissions.goalReached : commissions.global;
-}
-
-function computeAvailableFromProofsAndWithdrawals(
-  username: string,
-  proofs: ProofDoc[],
-  withdrawals: WithdrawalDoc[],
-  options?: {
-    globalCommissionPercentOverride?: number | null;
-    goalReachedCommissionPercentOverride?: number | null;
-    legacyCommissionPercentOverride?: number | null;
-    balanceAdjustment?: number;
-    referralBonusAmount?: number;
-  },
-) {
-  const commissionPercent = computeTodayCommissionPercentForUser(
-    username,
-    proofs,
-    {
-      globalCommissionPercentOverride: options?.globalCommissionPercentOverride,
-      goalReachedCommissionPercentOverride: options?.goalReachedCommissionPercentOverride,
-      legacyCommissionPercentOverride: options?.legacyCommissionPercentOverride,
-    },
-  );
-  const grossReal = proofs
-    .filter((proof) => String(proof.uploader ?? "").toLowerCase() === username)
-    .reduce((acc, proof) => acc + Number(proof.saleValue ?? 0) * (commissionPercent / 100), 0);
-  const approvedTotal = withdrawals
-    .filter(
-      (w) =>
-        String(w.username ?? "").toLowerCase() === username &&
-        normalizeWithdrawalStatus(w.status) === "approved",
-    )
-    .reduce((acc, w) => acc + Number(w.amount ?? 0), 0);
-  const balanceAdjustment = Number(options?.balanceAdjustment ?? 0);
-  const referralBonusAmount = Number(options?.referralBonusAmount ?? 0);
-  return {
-    commissionPercent,
-    balanceAdjustment: Number(balanceAdjustment.toFixed(2)),
-    referralBonusAmount: Number(referralBonusAmount.toFixed(2)),
-    approvedTotal: Number(approvedTotal.toFixed(2)),
-    grossReal: Number(grossReal.toFixed(2)),
-    available: Number(
-      Math.max(0, grossReal + referralBonusAmount - approvedTotal + balanceAdjustment).toFixed(2),
-    ),
-  };
 }
 
 function mongo503(e: unknown) {

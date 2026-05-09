@@ -315,7 +315,13 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
   const [memberWalletAvailable, setMemberWalletAvailable] = useState<number>(0);
   const [memberControlMessage, setMemberControlMessage] = useState("");
   const [memberControlBusy, setMemberControlBusy] = useState(false);
-  const [memberBalanceDeltaInput, setMemberBalanceDeltaInput] = useState("");
+  const [memberBalanceTargetInput, setMemberBalanceTargetInput] = useState("");
+  const [memberBalanceEditing, setMemberBalanceEditing] = useState(false);
+  const [memberBalanceBusy, setMemberBalanceBusy] = useState(false);
+  const memberBalanceEditingRef = useRef(false);
+  useEffect(() => {
+    memberBalanceEditingRef.current = memberBalanceEditing;
+  }, [memberBalanceEditing]);
   const [memberGoalTodayInput, setMemberGoalTodayInput] = useState("");
   const [memberStreakInput, setMemberStreakInput] = useState("");
   const [memberGoalCommissionInput, setMemberGoalCommissionInput] = useState("");
@@ -397,6 +403,7 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
     if (!memberManageUsername) {
       setMemberManageFines([]);
       setMemberControlMessage("");
+      setMemberBalanceEditing(false);
       return;
     }
     void (async () => {
@@ -410,19 +417,45 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
       setMemberManageFines((await res.json()) as AdminFine[]);
       await loadMemberWallet(memberManageUsername);
     })();
+    // Polling em tempo real do saldo do membro selecionado (3s).
+    const interval = setInterval(() => {
+      if (!memberBalanceBusy) {
+        void loadMemberWallet(memberManageUsername);
+      }
+    }, 3000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [memberManageUsername]);
 
   useEffect(() => {
     if (activeSection !== "membros") {
       setMemberManageUsername(null);
       setMemberManageError("");
+      return;
     }
+    // Polling para manter os dados de membros (goals, ranking, comissoes)
+    // sempre frescos enquanto admin esta na aba.
+    const interval = setInterval(() => {
+      void loadGoalsUsers();
+      void loadProofs();
+    }, 8000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSection]);
 
+  // Rebobina os inputs APENAS quando troca de membro selecionado.
+  // O polling em background atualiza `goalsUsers` (display "Atual:")
+  // mas nao reseta o que admin esta digitando nos inputs.
+  const lastSelectedMemberRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!memberManageUsername) return;
+    if (!memberManageUsername) {
+      lastSelectedMemberRef.current = null;
+      return;
+    }
     const goal = goalsUsers.find((item) => item.username === memberManageUsername);
     if (!goal) return;
+    if (lastSelectedMemberRef.current === memberManageUsername) return;
+    lastSelectedMemberRef.current = memberManageUsername;
     setMemberGoalTodayInput(String(Number(goal.total ?? 0).toFixed(2)));
     setMemberStreakInput(String(Math.max(0, Number(goal.streakDays ?? 0))));
     setMemberGoalCommissionInput(
@@ -762,7 +795,49 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
     const response = await fetch(`/api/withdrawals?username=${encodeURIComponent(username)}`);
     if (!response.ok) return;
     const data = (await response.json()) as { wallet?: { available?: number } };
-    setMemberWalletAvailable(Number(data.wallet?.available ?? 0));
+    const available = Number(data.wallet?.available ?? 0);
+    setMemberWalletAvailable(available);
+    if (!memberBalanceEditingRef.current) {
+      setMemberBalanceTargetInput(available.toFixed(2));
+    }
+  }
+
+  async function handleSaveMemberBalanceTarget() {
+    if (!memberManageUsername) return;
+    const raw = String(memberBalanceTargetInput).trim().replace(",", ".");
+    const target = Number(raw);
+    if (!Number.isFinite(target) || target < 0) {
+      setMemberControlMessage("Saldo invalido.");
+      return;
+    }
+    setMemberBalanceBusy(true);
+    setMemberControlMessage("");
+    try {
+      const response = await fetch("/api/admin/wallet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: memberManageUsername,
+          setAvailableTo: Number(target.toFixed(2)),
+        }),
+      });
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        wallet?: { available?: number };
+      };
+      if (!response.ok) {
+        setMemberControlMessage(String(data.error ?? "Falha ao salvar saldo."));
+        return;
+      }
+      const newAvailable = Number(data.wallet?.available ?? target);
+      setMemberWalletAvailable(newAvailable);
+      setMemberBalanceTargetInput(newAvailable.toFixed(2));
+      setMemberBalanceEditing(false);
+      setMemberControlMessage("Saldo atualizado em tempo real.");
+      void loadGoalsUsers();
+    } finally {
+      setMemberBalanceBusy(false);
+    }
   }
 
   async function patchMemberControls(payload: Record<string, unknown>) {
@@ -1793,45 +1868,60 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
                     </div>
                   ) : null}
 
-                  <div className="grid gap-3 rounded-2xl border border-[#BC8A6F44] bg-[#fff7f3] p-4 lg:grid-cols-2">
-                    <article className="rounded-xl border border-[#BC8A6F33] bg-white p-3">
-                      <p className="text-sm font-medium text-[#7a5643]">Ajustar saldo da conta</p>
-                      <p className="mt-1 text-xs text-[#9a725c]">
-                        Saldo disponivel atual: <strong className="text-[#7a5643]">R$ {memberWalletAvailable.toFixed(2)}</strong>
+                  <div className="grid gap-3 rounded-2xl border-2 border-[#BC8A6F88] bg-gradient-to-br from-[#fff3ec] to-[#f7e2d2] p-4 shadow-sm lg:grid-cols-2">
+                    <article className="rounded-xl border-2 border-[#BC8A6F88] bg-white p-4 shadow-sm">
+                      <p className="text-sm font-bold uppercase tracking-wide text-[#7a5643]">
+                        Saldo da conta (em tempo real)
                       </p>
-                      <div className="mt-2 flex gap-2">
+                      <p className="mt-2 text-3xl font-bold tracking-tight text-[#7a5643]">
+                        R$ {memberWalletAvailable.toFixed(2)}
+                      </p>
+                      <p className="mt-1 text-[11px] text-[#9a725c]">
+                        Edite o valor abaixo e clique em <strong>Salvar saldo</strong>. Use isso
+                        quando algum pagamento foi feito fora do site para deixar o saldo
+                        certo (ex.: pagar R$ 100 fora &rarr; subtrair R$ 100 do saldo).
+                      </p>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-semibold text-[#7a5643]">R$</span>
                         <input
-                          className="w-36 rounded-lg border border-[#BC8A6F66] px-2 py-1 text-sm text-[#7a5643]"
+                          className="w-36 rounded-lg border-2 border-[#BC8A6F88] bg-[#fff7f3] px-2 py-1.5 text-sm font-semibold text-[#7a5643]"
                           inputMode="decimal"
-                          placeholder="Ex.: 50"
-                          value={memberBalanceDeltaInput}
-                          onChange={(e) => setMemberBalanceDeltaInput(e.target.value)}
+                          placeholder="0.00"
+                          value={memberBalanceTargetInput}
+                          onChange={(e) => {
+                            setMemberBalanceTargetInput(e.target.value);
+                            setMemberBalanceEditing(true);
+                          }}
+                          onFocus={() => setMemberBalanceEditing(true)}
+                          onBlur={() => {
+                            const raw = String(memberBalanceTargetInput).trim().replace(",", ".");
+                            const num = Number(raw);
+                            if (
+                              !Number.isFinite(num) ||
+                              Math.abs(num - memberWalletAvailable) < 0.005
+                            ) {
+                              setMemberBalanceEditing(false);
+                            }
+                          }}
                         />
                         <button
                           type="button"
-                          disabled={memberControlBusy}
-                          onClick={() => {
-                            const delta = Number(memberBalanceDeltaInput.replace(",", "."));
-                            if (!Number.isFinite(delta) || delta <= 0) return;
-                            void patchMemberControls({ balanceAdjustmentDelta: delta });
-                            setMemberBalanceDeltaInput("");
-                          }}
-                          className="rounded-lg bg-emerald-100 px-2 py-1 text-xs text-emerald-900 hover:bg-emerald-200/80 disabled:opacity-45"
+                          disabled={memberBalanceBusy}
+                          onClick={() => void handleSaveMemberBalanceTarget()}
+                          className="rounded-lg bg-[#BC8A6F] px-3 py-1.5 text-xs font-semibold text-white hover:brightness-95 disabled:opacity-45"
                         >
-                          Adicionar
+                          {memberBalanceBusy ? "Salvando..." : "Salvar saldo"}
                         </button>
                         <button
                           type="button"
-                          disabled={memberControlBusy}
+                          disabled={memberBalanceBusy}
                           onClick={() => {
-                            const delta = Number(memberBalanceDeltaInput.replace(",", "."));
-                            if (!Number.isFinite(delta) || delta <= 0) return;
-                            void patchMemberControls({ balanceAdjustmentDelta: -delta });
-                            setMemberBalanceDeltaInput("");
+                            setMemberBalanceTargetInput(memberWalletAvailable.toFixed(2));
+                            setMemberBalanceEditing(false);
                           }}
-                          className="rounded-lg bg-red-100 px-2 py-1 text-xs text-red-900 hover:bg-red-200/80 disabled:opacity-45"
+                          className="rounded-lg border border-[#BC8A6F66] px-2 py-1 text-xs text-[#7a5643] hover:bg-[#fff7f3] disabled:opacity-45"
                         >
-                          Remover
+                          Cancelar
                         </button>
                       </div>
                     </article>

@@ -143,6 +143,13 @@ export async function GET() {
   }
 }
 
+function sanitizePercent(value: unknown): number | null {
+  if (value === null) return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.min(100, Math.max(0, numeric));
+}
+
 export async function PATCH(request: Request) {
   const session = await getSessionFromCookie();
   if (!session || session.role !== "admin") {
@@ -158,6 +165,7 @@ export async function PATCH(request: Request) {
         globalCommissionPercentOverride?: number | null;
         goalReachedCommissionPercentOverride?: number | null;
         balanceAdjustmentDelta?: number;
+        setBalanceTo?: number;
       }
     | null;
 
@@ -189,6 +197,15 @@ export async function PATCH(request: Request) {
       goalReachedCommissionPercentOverride?: number | null;
     } = {};
 
+    if (Object.prototype.hasOwnProperty.call(body ?? {}, "setBalanceTo")) {
+      // Compatibilidade: para definir o saldo absoluto, encaminhe para
+      // /api/admin/wallet (que conhece grossReal + bonus + saques aprovados).
+      return NextResponse.json(
+        { error: "Para definir o saldo, use a rota /api/admin/wallet." },
+        { status: 400 },
+      );
+    }
+
     if (body?.balanceAdjustmentDelta != null) {
       const delta = Number(body.balanceAdjustmentDelta);
       if (!Number.isFinite(delta)) {
@@ -198,28 +215,68 @@ export async function PATCH(request: Request) {
     }
     if (Object.prototype.hasOwnProperty.call(body ?? {}, "dailyProgressOverride")) {
       const v = body?.dailyProgressOverride;
+      if (v != null && !Number.isFinite(Number(v))) {
+        return NextResponse.json({ error: "Meta hoje invalida." }, { status: 400 });
+      }
       patch.dailyProgressOverride = v == null ? null : Math.max(0, Number(v));
     }
     if (Object.prototype.hasOwnProperty.call(body ?? {}, "streakOverride")) {
       const v = body?.streakOverride;
+      if (v != null && !Number.isFinite(Number(v))) {
+        return NextResponse.json({ error: "Foguinho invalido." }, { status: 400 });
+      }
       patch.streakOverride = v == null ? null : Math.max(0, Math.floor(Number(v)));
     }
-    if (Object.prototype.hasOwnProperty.call(body ?? {}, "commissionPercentOverride")) {
-      const v = body?.commissionPercentOverride;
-      patch.commissionPercentOverride =
-        v == null ? null : Math.min(100, Math.max(0, Number(v)));
-    }
+
+    // Quando salva qualquer override de comissao novo (global/meta), limpamos
+    // o legacy `commissionPercentOverride` para evitar que ele "puxe" o
+    // calculo para o valor antigo (35% padrao). Se o admin quiser explicitar
+    // a comissao legada, deve enviar `commissionPercentOverride` direto.
+    let touchedNewCommission = false;
+
     if (Object.prototype.hasOwnProperty.call(body ?? {}, "globalCommissionPercentOverride")) {
       const v = body?.globalCommissionPercentOverride;
-      patch.globalCommissionPercentOverride =
-        v == null ? null : Math.min(100, Math.max(0, Number(v)));
+      const sanitized = v == null ? null : sanitizePercent(v);
+      if (v != null && sanitized == null) {
+        return NextResponse.json(
+          { error: "Comissao global invalida (use um numero entre 0 e 100)." },
+          { status: 400 },
+        );
+      }
+      patch.globalCommissionPercentOverride = sanitized;
+      touchedNewCommission = true;
     }
     if (
       Object.prototype.hasOwnProperty.call(body ?? {}, "goalReachedCommissionPercentOverride")
     ) {
       const v = body?.goalReachedCommissionPercentOverride;
-      patch.goalReachedCommissionPercentOverride =
-        v == null ? null : Math.min(100, Math.max(0, Number(v)));
+      const sanitized = v == null ? null : sanitizePercent(v);
+      if (v != null && sanitized == null) {
+        return NextResponse.json(
+          { error: "Comissao da meta invalida (use um numero entre 0 e 100)." },
+          { status: 400 },
+        );
+      }
+      patch.goalReachedCommissionPercentOverride = sanitized;
+      touchedNewCommission = true;
+    }
+    if (Object.prototype.hasOwnProperty.call(body ?? {}, "commissionPercentOverride")) {
+      const v = body?.commissionPercentOverride;
+      const sanitized = v == null ? null : sanitizePercent(v);
+      if (v != null && sanitized == null) {
+        return NextResponse.json(
+          { error: "Comissao invalida (use um numero entre 0 e 100)." },
+          { status: 400 },
+        );
+      }
+      patch.commissionPercentOverride = sanitized;
+    } else if (touchedNewCommission && current.commissionPercentOverride != null) {
+      // Limpa explicitamente o legacy quando admin altera os campos novos.
+      patch.commissionPercentOverride = null;
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return NextResponse.json({ error: "Nenhuma alteracao enviada." }, { status: 400 });
     }
 
     const saved = await upsertMemberControl(username, patch, session.username);
