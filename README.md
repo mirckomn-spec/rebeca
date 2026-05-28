@@ -1,73 +1,67 @@
 # Hots - area privada de comprovantes
 
-Site em Next.js com login privado para equipe selecionada, upload de prints/gravacoes e visualizacao dos comprovantes em um painel interno.
+Site em Next.js hospedado na **Vercel** via **GitHub** (`git push`).
 
-## Setup rapido
+**Producao:** https://bel-gamma.vercel.app
 
-1. Instale as dependencias:
+## Deploy (GitHub → Vercel)
+
+1. Faca alteracoes na pasta `rebeca`.
+2. Commit e push:
    ```bash
-   npm install
+   git add .
+   git commit -m "sua mensagem"
+   git push
    ```
-2. Configure as variaveis de ambiente:
-   - **Hospedagem:** painel Environment Variables (Vercel, Netlify, etc.).
-   - **Local:** crie `.env.local` na raiz do projeto com as mesmas chaves.
+3. A Vercel faz build e publica automaticamente (nao precisa rodar `npm run dev` nem abrir localhost).
 
-## Rodar em desenvolvimento
+Configuracao na Vercel (projeto conectado ao repo):
+
+- **Framework:** Next.js
+- **Root Directory:** `rebeca` (se o repo tiver a pasta `rebeca` na raiz)
+- **Build Command:** `npm run build`
+- **Output:** padrao Next.js
+
+## Variaveis de ambiente (painel Vercel)
+
+Configure em **Settings → Environment Variables** (Production):
+
+| Variavel | Obrigatoria |
+|----------|-------------|
+| `MONGODB_URI` | Sim |
+| `JWT_SECRET` | Sim |
+| `MONGODB_DB_NAME` | Nao (padrao: `hots`) |
+| `DISCORD_BOT_TOKEN` | Se usar upload Discord |
+| `DISCORD_UPLOADS_CHANNEL_ID` | Se usar upload Discord |
+
+Opcional (dominio proprio):
+
+- `NEXT_PUBLIC_SITE_URL` = `https://seu-dominio.com`
+
+Depois de alterar variaveis: **Redeploy**.
+
+## Testar se o banco esta ok (producao)
+
+Abra apos o deploy:
+
+`https://bel-gamma.vercel.app/api/health/db`
+
+- `connected: true` → MongoDB OK
+- `connected: false` → veja o campo `hint` e ajuste `MONGODB_URI` / Atlas (rede `0.0.0.0/0`)
+
+## Login
+
+- Usuario admin: `bel`
+- Senha: definida em `ALLOWED_USERS` no codigo (usuario `bel`)
+
+## Desenvolvimento local (opcional)
+
+So use se quiser testar na sua maquina. **Nao e necessario para publicar o site.**
 
 ```bash
+npm install
+# crie .env.local com as mesmas variaveis da Vercel
 npm run dev
 ```
 
-## Rodar em producao
-
-```bash
-npm run build
-npm run start
-```
-
-## Deploy (GitHub + hospedagem)
-
-1. Suba o projeto para o GitHub.
-2. Conecte o repositorio na sua plataforma de deploy (ex.: Vercel).
-3. Configure as variaveis de ambiente no painel da plataforma (veja lista abaixo).
-4. Faça o deploy com:
-   - Build command: `npm run build`
-   - Start command: `npm run start`
-
-## Como funciona o login
-
-- Nao existe cadastro publico.
-- Login fixo e unico:
-  - Usuario: `bel`
-  - Senha: `bel94838`
-
-## Comprovantes
-
-- Upload de `image/*` e `video/*` no dashboard.
-- Metadados ficam na collection `proofs`.
-- Arquivos novos sao enviados para um canal do Discord e o sistema salva a URL.
-
-## Variaveis de ambiente
-
-- `MONGODB_URI`: string de conexao do MongoDB (obrigatoria em producao).
-- `MONGODB_DB_NAME`: nome do banco (opcional, padrao `hots`).
-- `JWT_SECRET`: chave para assinar token de autenticacao.
-- `DISCORD_BOT_TOKEN`: token do bot com permissao de enviar mensagens/anexos.
-- `DISCORD_UPLOADS_CHANNEL_ID`: ID do canal que recebe comprovantes e avatares.
-
-## Login ok mas volta para a home com `?erro=banco`
-
-Isso **nao e falha de senha**. O login criou a sessao, mas ao abrir `/painel` ou `/dashboard` o servidor nao conectou no MongoDB.
-
-No **Vercel** (Environment Variables), confira:
-
-1. `MONGODB_URI` preenchida (ex.: `mongodb+srv://usuario:senha@cluster....mongodb.net/`)
-2. Senha com caracteres especiais (`@`, `#`, etc.) deve estar **URL-encoded** na URI.
-3. Variaveis marcadas para **Production** (e Preview, se testar preview).
-4. **Redeploy** apos salvar.
-
-No **MongoDB Atlas**:
-
-1. **Database Access**: usuario com senha correta.
-2. **Network Access**: adicione `0.0.0.0/0` (Allow access from anywhere) — necessario para Vercel, pois os IPs mudam.
-3. Cluster ativo e URI copiada do botao **Connect**.
+O site em producao **nao** usa localhost; usa o dominio da Vercel automaticamente.

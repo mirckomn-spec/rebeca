@@ -40,6 +40,7 @@ type RankingPrizes = {
 type MembrosPainelClientProps = {
   username: string;
   initialProofs: Proof[];
+  dbError?: string | null;
 };
 
 type Fine = {
@@ -234,6 +235,7 @@ function podiumRowClass(index: number) {
 export default function MembrosPainelClient({
   username,
   initialProofs,
+  dbError = null,
 }: MembrosPainelClientProps) {
   const router = useRouter();
   const [activeSection, setActiveSection] = useState<PainelSection>("dashboard");
@@ -585,6 +587,12 @@ export default function MembrosPainelClient({
   return (
     <main className="flex min-h-screen items-center justify-center bg-gradient-to-b from-[#F6E1E1] via-[#f8ece7] to-[#f3dfd5] p-6">
       <div className="mx-auto my-auto grid w-full max-w-6xl gap-6 lg:grid-cols-[240px_1fr]">
+        {dbError ? (
+          <div className="lg:col-span-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            Nao foi possivel carregar os dados do banco agora. O login esta ativo, mas algumas funcoes podem falhar
+            ate a conexao com o MongoDB voltar.
+          </div>
+        ) : null}
         <aside className="rounded-3xl border border-[#BC8A6F66] bg-white/85 p-4 shadow-2xl shadow-[#BC8A6F35] backdrop-blur">
           <div className="relative">
             <button

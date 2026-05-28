@@ -1,7 +1,10 @@
 import { redirect } from "next/navigation";
 import MembrosPainelClient from "@/components/membros-painel-client";
 import { getSessionFromCookie } from "@/lib/auth";
-import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
+import { getDbSafe } from "@/lib/mongodb";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 export default async function PainelPage() {
   const session = await getSessionFromCookie();
@@ -20,18 +23,16 @@ export default async function PainelPage() {
   };
 
   let proofs: ProofRow[] = [];
-  try {
-    const db = await getDbRequired();
+  let dbError: string | null = null;
+  const { db, error } = await getDbSafe();
+  if (db) {
     proofs = (await db
       .collection("proofs")
       .find({ uploader: session.username })
       .sort({ createdAt: -1 })
       .toArray()) as unknown as ProofRow[];
-  } catch (e) {
-    if (e instanceof MongoUnavailableError) {
-      redirect("/?erro=banco");
-    }
-    throw e;
+  } else {
+    dbError = error;
   }
 
   const initialProofs = proofs.map((proof) => ({
@@ -46,6 +47,10 @@ export default async function PainelPage() {
   }));
 
   return (
-    <MembrosPainelClient username={session.username} initialProofs={initialProofs} />
+    <MembrosPainelClient
+      username={session.username}
+      initialProofs={initialProofs}
+      dbError={dbError}
+    />
   );
 }

@@ -2,7 +2,10 @@ import { redirect } from "next/navigation";
 import DashboardClient from "@/components/dashboard-client";
 import { getSessionFromCookie } from "@/lib/auth";
 import { listMemberUsernames } from "@/lib/members";
-import { getDbRequired, MongoUnavailableError } from "@/lib/mongodb";
+import { getDbSafe } from "@/lib/mongodb";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 function getCurrentMs() {
   return Date.now();
@@ -27,18 +30,16 @@ export default async function DashboardPage() {
   };
 
   let proofs: ProofRow[] = [];
-  try {
-    const db = await getDbRequired();
+  let dbError: string | null = null;
+  const { db, error } = await getDbSafe();
+  if (db) {
     proofs = (await db
       .collection("proofs")
       .find({})
       .sort({ createdAt: -1 })
       .toArray()) as unknown as ProofRow[];
-  } catch (e) {
-    if (e instanceof MongoUnavailableError) {
-      redirect("/?erro=banco");
-    }
-    throw e;
+  } else {
+    dbError = error;
   }
 
   const initialProofs = proofs.map((proof) => ({
@@ -80,6 +81,6 @@ export default async function DashboardPage() {
   ];
 
   return (
-    <DashboardClient initialProofs={initialProofs} members={members} />
+    <DashboardClient initialProofs={initialProofs} members={members} dbError={dbError} />
   );
 }

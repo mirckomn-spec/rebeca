@@ -20,7 +20,20 @@ const poppinsExtraBold = localFont({
   display: "swap",
 });
 
+function getProductionSiteUrl() {
+  const production = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim();
+  if (production) return `https://${production}`;
+  const deployment = process.env.VERCEL_URL?.trim();
+  if (deployment) return `https://${deployment}`;
+  const custom = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+  if (custom) return custom.replace(/\/$/, "");
+  return undefined;
+}
+
+const siteUrl = getProductionSiteUrl();
+
 export const metadata: Metadata = {
+  metadataBase: siteUrl ? new URL(siteUrl) : undefined,
   title: "Hots",
   description: "Area privada.",
   robots: {

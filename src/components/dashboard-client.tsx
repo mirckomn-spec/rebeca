@@ -40,6 +40,7 @@ type DashboardClientProps = {
     role: string;
     totalSales: number;
   }[];
+  dbError?: string | null;
 };
 
 type AdminFine = {
@@ -180,7 +181,11 @@ function adminPodiumRowClass(index: number) {
   return "";
 }
 
-export default function DashboardClient({ initialProofs, members }: DashboardClientProps) {
+export default function DashboardClient({
+  initialProofs,
+  members,
+  dbError = null,
+}: DashboardClientProps) {
   type DashboardSection =
     | "dashboard"
     | "comprovantes"
@@ -1314,6 +1319,12 @@ export default function DashboardClient({ initialProofs, members }: DashboardCli
   return (
     <main className="flex min-h-screen items-center justify-center bg-gradient-to-b from-[#F6E1E1] via-[#f8ece7] to-[#f3dfd5] p-6">
       <div className="mx-auto my-auto grid w-full max-w-6xl gap-6 lg:grid-cols-[260px_1fr]">
+        {dbError ? (
+          <div className="lg:col-span-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            Nao foi possivel carregar os dados do banco agora. O login esta ativo, mas algumas funcoes podem falhar
+            ate a conexao com o MongoDB voltar.
+          </div>
+        ) : null}
         <aside className="rounded-3xl border border-[#BC8A6F66] bg-white/85 p-4 shadow-2xl shadow-[#BC8A6F35] backdrop-blur">
           <h2 className="mb-4 text-xl text-[#7a5643]">Admin Bel</h2>
           <nav className="grid gap-2">
