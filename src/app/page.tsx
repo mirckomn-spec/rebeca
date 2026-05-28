@@ -20,6 +20,16 @@ export default function Home() {
     };
   }, []);
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("erro") === "banco") {
+      setError(
+        "Login realizado, mas o painel nao abriu: o banco de dados nao respondeu. Confira MONGODB_URI no Vercel e, no MongoDB Atlas, libere acesso de rede 0.0.0.0/0. Depois faca um novo deploy.",
+      );
+      window.history.replaceState({}, "", "/");
+    }
+  }, []);
+
   function startCooldown(durationMs: number) {
     if (cooldownTimerRef.current) clearInterval(cooldownTimerRef.current);
     const endsAt = Date.now() + durationMs;

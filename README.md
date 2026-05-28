@@ -49,8 +49,25 @@ npm run start
 
 ## Variaveis de ambiente
 
-- `MONGODB_URI`: string de conexao do MongoDB.
+- `MONGODB_URI`: string de conexao do MongoDB (obrigatoria em producao).
 - `MONGODB_DB_NAME`: nome do banco (opcional, padrao `hots`).
 - `JWT_SECRET`: chave para assinar token de autenticacao.
 - `DISCORD_BOT_TOKEN`: token do bot com permissao de enviar mensagens/anexos.
 - `DISCORD_UPLOADS_CHANNEL_ID`: ID do canal que recebe comprovantes e avatares.
+
+## Login ok mas volta para a home com `?erro=banco`
+
+Isso **nao e falha de senha**. O login criou a sessao, mas ao abrir `/painel` ou `/dashboard` o servidor nao conectou no MongoDB.
+
+No **Vercel** (Environment Variables), confira:
+
+1. `MONGODB_URI` preenchida (ex.: `mongodb+srv://usuario:senha@cluster....mongodb.net/`)
+2. Senha com caracteres especiais (`@`, `#`, etc.) deve estar **URL-encoded** na URI.
+3. Variaveis marcadas para **Production** (e Preview, se testar preview).
+4. **Redeploy** apos salvar.
+
+No **MongoDB Atlas**:
+
+1. **Database Access**: usuario com senha correta.
+2. **Network Access**: adicione `0.0.0.0/0` (Allow access from anywhere) — necessario para Vercel, pois os IPs mudam.
+3. Cluster ativo e URI copiada do botao **Connect**.

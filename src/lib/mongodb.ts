@@ -6,7 +6,7 @@ const globalWithMongo = global as typeof globalThis & {
 };
 
 function getMongoUri() {
-  const uri = process.env.MONGODB_URI;
+  const uri = process.env.MONGODB_URI?.trim();
   if (!uri) {
     throw new Error("Defina MONGODB_URI nas variaveis de ambiente.");
   }
@@ -23,6 +23,8 @@ function getMongoClientPromise(): Promise<MongoClient> {
     const client = new MongoClient(getMongoUri(), {
       serverSelectionTimeoutMS: 15_000,
       maxPoolSize: 10,
+      maxIdleTimeMS: 10_000,
+      socketTimeoutMS: 45_000,
     });
     globalWithMongo.mongoClientPromise = client.connect().catch((err) => {
       globalWithMongo.mongoClientPromise = undefined;
@@ -34,7 +36,8 @@ function getMongoClientPromise(): Promise<MongoClient> {
 
 export async function getDb() {
   const client = await getMongoClientPromise();
-  return client.db(process.env.MONGODB_DB_NAME ?? "hots");
+  const dbName = process.env.MONGODB_DB_NAME?.trim();
+  return client.db(dbName && dbName.length > 0 ? dbName : "hots");
 }
 
 export async function getDbSafe() {
