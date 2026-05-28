@@ -8,8 +8,9 @@ Site em Next.js com login privado para equipe selecionada, upload de prints/grav
    ```bash
    npm install
    ```
-2. Crie seu arquivo de ambiente:
-   - copie `.env.example` para `.env.local` (desenvolvimento) ou configure as mesmas variaveis no provedor de hospedagem.
+2. Configure as variaveis de ambiente:
+   - **Hospedagem:** painel Environment Variables (Vercel, Netlify, etc.).
+   - **Local:** crie `.env.local` na raiz do projeto com as mesmas chaves.
 
 ## Rodar em desenvolvimento
 
@@ -28,7 +29,7 @@ npm run start
 
 1. Suba o projeto para o GitHub.
 2. Conecte o repositorio na sua plataforma de deploy (ex.: Vercel).
-3. Configure as variaveis de ambiente da `.env.example` no painel da plataforma.
+3. Configure as variaveis de ambiente no painel da plataforma (veja lista abaixo).
 4. Faça o deploy com:
    - Build command: `npm run build`
    - Start command: `npm run start`
